@@ -1,0 +1,20 @@
+`n
+`n
+`n
+`n
+`n
+`n
+`nSoft & Hard Guardrails for Coding Agents`n
+`n
+`n
+`n
+`n`n`n`n`n`n`nRoundtable prep`n`nSoft & Hard Guardrails for Coding Agents`n`nReal, verified examples pulled straight from the ds-connect repo — not hypotheticals.`n`n`n`n`nds-connect · .NET modular monolith + Expo/React frontend`n`n`n`n`n`n
+`n`n`n`n`n`n`nTwo kinds of guardrail`n`n`n`nHard`n`nMechanically blocks the outcome`n`nBuild fails, commit is rejected, or the pipeline goes red. No human has to notice — the tooling refuses to proceed.`n`nCompiler errors · analyzer rules set to error · arch tests · git hooks · required CI checks`n`n`n`nSoft`n`nGuides, but doesn't block`n`nA human — or an agent reading instructions — has to choose to follow it. Nothing stops the code from shipping if they don't.`n`nWarnings · CLAUDE.md / AGENTS.md · ADRs · skill docs · style conventions`n`n`n`n`n`n`n`n`n
+`n`n`n`n`n`n`n`nSoft`n`nGuidance only — nothing enforces it`n`n`n`nFile`n`nRule`n`nWhy it's soft`n`nCLAUDE.md / AGENTS.md`n`n"Do not add instructions here; edit AGENTS.md"`n`nA convention — no tool checks it was followed`n`nsrc/.editorconfig`n`ndotnet_diagnostic.CA1848.severity = warning`n`nDeliberately kept below error, unlike MOD/CQS rules`n`n.editorconfig header comment`n`nSuppressions "must carry an explicit inline rationale"`n`nNothing checks the rationale is actually there`n`n.claude/skills/ds-connect-design/knowledge/*.md`n`nToken rules, component conventions`n`nGuides an agent's behavior; only its own validate script is enforced`n`ndocs/adr/*.md`n`nRecorded architecture decisions`n`nNothing checks new code against an ADR`n`n`n`n`n`n`n`n
+`n`n`n`n`n`n`n`nHard`n`nCode & build — fails before it even runs`n`n`n`nFile`n`nRule`n`nEffect`n`nsrc/Directory.Build.props`n`n<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`n`nAny compiler warning stops the build`n`nsrc/.editorconfig`n`ndotnet_diagnostic.MOD002.severity = error`n`nCustom Roslyn analyzer blocks cross-module references`n`nDsConnect.ArchTests/ModuleBoundary_Should_Constraint.cs`n`nModules_Should_NotReferenceAnotherModuleImplementationDirectly (NetArchTest)`n`nTest fails if a module skips its Contracts boundary`n`nsrc/frontend/eslint.config.js`n`n"@typescript-eslint/no-deprecated": "error"`n`nCI runs eslint --max-warnings=0 — zero tolerance`n`n`n`n`n`n`n`n
+`n`n`n`n`n`n`n`nHard`n`nHooks & CI — fails before it ships`n`n`n`nFile`n`nRule`n`nEffect`n`n.husky/pre-commit`n`ndotnet csharpier format + pnpm exec lint-staged`n`nCommit is blocked on formatting failure`n`n.husky/commit-msg`n`npnpm exec commitlint --edit "$COMMIT_MSG_FILE"`n`nCommit is rejected if the message isn't conventional`n`n.github/workflows/lint.yml`n`ncsharpier check · eslint --max-warnings=0 · validate-design-system.sh`n`nPipeline goes red on any violation`n`n.github/workflows/openspec-validate.yml`n`nopenspec validate --changes --no-interactive`n`nSpec conformance is gated in CI, not just documented`n`n`n`n`n`n`n`n
+`n`n`n`n`n`n`nEvery soft guardrail is a hard one someone hasn't written yet`n`nvalidate-design-system.sh was a doc first. The MOD00x analyzers were an .editorconfig convention first. An agent follows soft guidance only as well as it reads it — hard guardrails don't need it to.`n`n`n`n`n`nDiscuss: what's our next soft → hard candidate?`n`n`n`n`n`n`n
+`n
+`n`n
+`n
+`n
