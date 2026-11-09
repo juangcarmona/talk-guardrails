@@ -20,6 +20,7 @@ const Z_MIN = 2
 const LENGTH = 90
 const ROW = 0.011
 const EASE_MS = 1400
+const TURN_MS = 3200
 
 // Lateral positions across the road, in metres from the camera. We drive on the
 // right, as in Spain: the mountain wall on the left, the ravine on our right.
@@ -58,6 +59,10 @@ function view(s0: number): View {
 
 // When the lorry comes through, we flinch: 0 normally, 1 with our wheels on the edge of the drop.
 let swerve = 0
+/** How far the lorry leans towards us as it passes (negative: towards the wall). */
+let drift = 0
+/** This pass is a close one: with protection there, we hit it. */
+let extreme = false
 const SWERVE_U = 2.25
 
 /** A point `z` metres ahead, `u` across, `h` up, to sheet pixels, following the bends. */
@@ -159,21 +164,33 @@ function ridge(a: number, layer: number) {
 }
 
 /** Draw one frame: `travel` metres along the road, `t` seconds of clock (for twinkle). */
-export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: number) {
+export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: number, hero: Hero = HERO_IDLE) {
   const ctx = canvas.getContext('2d')!
   const scale = canvas.width / W
   const show = Math.min(1, Math.max(0, (f.head - .1) * 3))
   // We only flinch towards the edge where nothing would stop us: paint, or no barrier at all.
-  const exposed = 1 - smooth((f.coverage - .3) / .35)
+  // Without even paint, the lorry takes its half out of the middle; with lines it keeps to its side.
+  drift = regimeOf(f) === 'none' ? .7 : -.35
   swerve = 0
-  for (const truck of TRAFFIC) if (truck.kind === 'truck') {
+  extreme = false
+  TRAFFIC.forEach((truck, k) => {
+    if (truck.kind !== 'truck') return
     const gap = (((truck.s0 - travel * 1.9) % truck.period) + truck.period) % truck.period
-    swerve = Math.max(swerve, flinch(gap < truck.period / 2 ? gap : gap - truck.period))
-  }
-  swerve *= show * exposed * Math.min(1, f.speed / 3)
+    const near = flinch(gap < truck.period / 2 ? gap : gap - truck.period)
+    if (near <= swerve) return
+    swerve = near
+    // Only some passes are close enough to put us into the protection: a sharp bend, or bad luck.
+    const lap = Math.floor((travel * 1.9 - truck.s0 + truck.period / 2) / truck.period)
+    extreme = Math.abs(curvature(travel + HERO_Z)) / C_MAX > .75 || hash(lap * 31 + k * 7) < .3
+  })
+  swerve *= show * Math.min(1, f.speed / 3)
   // Lean towards the drop and shudder on the rumble of the edge; zoom a touch so the corners stay covered.
   const amp = (2 + 7 * swerve) * swerve
   ctx.setTransform(scale, 0, 0, scale, 0, 0)
+  // At the viewpoint we turn right: the road slides off to the left as the bay comes in.
+  const turn = smooth(f.bay)
+  if (turn > .999) { drawBay(ctx, t, 0); return 0 }
+  ctx.translate(-turn * W, 0)
   ctx.translate(W / 2 + Math.sin(t * 53) * amp, H / 2 + Math.sin(t * 71) * amp * .7)
   ctx.rotate(.05 * swerve)
   ctx.scale(1 + .08 * swerve, 1 + .08 * swerve)
@@ -410,7 +427,7 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     }
     for (; pi < props.length && props[pi].z >= z; pi++) props[pi].paint()
     // Lorries only on the open road and among the soft guardrails, where they give you a fright.
-    for (; ti < traffic.length && traffic[ti].z >= z; ti++) if (show) drawVehicle(ctx, v, traffic[ti].car, traffic[ti].z, dusk, fogOf(traffic[ti].z) * show * (traffic[ti].car.kind === 'truck' ? exposed : 1), lit(traffic[ti].z), lights)
+    for (; ti < traffic.length && traffic[ti].z >= z; ti++) if (show) drawVehicle(ctx, v, traffic[ti].car, traffic[ti].z, dusk, fogOf(traffic[ti].z) * show, lit(traffic[ti].z), lights)
 
     // Edges of this row: wall top, wall foot, road left, road right, ravine lip, ravine floor.
     // The lip of the ravine, a crisp broken edge.
@@ -442,8 +459,37 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
         put(paintTint, h1 < .5 ? '=' : '-', dash.x, dash.y, size, fog * f.dash)
       }
     }
+    // Level 1: whitewashed boulders along the edge, one every metre and a half or so.
+    if (calm(s) < f.coverage && f.stones > .01) {
+      const prev = travel + z * (1 + ROW)
+      if (Math.floor(prev / 1.5) !== Math.floor(s / 1.5)) {
+        const n = Math.floor(s / 1.5)
+        const big = .8 + hash(n * 3) * .45
+        const c = project(v, ROAD.rail - .05, z, .26 * big)
+        const rx = .36 * big * c.k, ry = .28 * big * c.k
+        const light = Math.min(1, .45 + .55 * lit(z))
+        ctx.globalAlpha = fogOf(z) * f.stones
+        ctx.fillStyle = shade(WHITEWASH, light * (1 - .4 * dusk))
+        ctx.beginPath(); ctx.ellipse(c.x, c.y, rx, ry, 0, Math.PI, 0); ctx.lineTo(c.x + rx, c.y + ry * .9); ctx.lineTo(c.x - rx, c.y + ry * .9); ctx.closePath(); ctx.fill()
+        ctx.fillStyle = shade(color.rock, light * .8)
+        ctx.fillRect(c.x - rx, c.y + ry * .45, rx * 2, ry * .45)
+        const gsize = Math.min(30, Math.max(4, c.k * .14))
+        for (let j = 0; j < 4; j++) put(color.scree, j % 2 ? '#' : ':', c.x + (j - 1.5) * rx * .45, c.y + ry * (.2 + .3 * hash(n * 7 + j)), gsize, fogOf(z) * .6 * f.stones)
+      }
+    }
+    // Level 2: a timber fence, two round rails on stout posts every 2 m.
+    if (calm(s) < f.coverage && f.logs > .01) {
+      const bsize = Math.min(30, Math.max(5, (FOCAL / z) * .13))
+      const a = fogOf(z) * (.55 + .45 * lit(z)) * f.logs
+      for (const h of [.38, .44, .74, .8]) {
+        const rail = project(v, ROAD.rail, z, h)
+        put(hash(i * 11 + h * 10) < .5 ? WOOD : WOOD_DARK, hash(i * 17 + h * 10) < .7 ? '=' : '#', rail.x, rail.y, bsize * 1.4, a)
+      }
+      const prev = travel + z * (1 + ROW)
+      if (Math.floor(prev / 2) !== Math.floor(s / 2)) for (let j = 0; j < 10; j++) { const post = project(v, ROAD.rail + .06, z, j * .09); put(WOOD_DARK, '#', post.x, post.y, bsize * 1.5, a) }
+    }
     // The barrier: W-beam in red and white 2 m panels, posts every 2 m, a reflector on every other post.
-    if (calm(s) < f.coverage) {
+    if (calm(s) < f.coverage && f.rail > .01) {
       const panel = Math.floor(s / 2) % 2 ? color.hard : color.paint
       const bsize = Math.min(30, Math.max(5, (FOCAL / z) * .12))
       for (const h of [.5, .58, .66, .74]) {
@@ -458,20 +504,20 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
       }
     }
   }
-  // Gravel kicked up as the wheels go over the edge.
-  if (swerve > .5) for (let k = 0; k < 40; k++) {
-    const a = hash(k * 17 + Math.floor(t * 30))
-    put(k % 3 ? color.scree : color.rock, k % 2 ? '.' : ':', 1250 + hash(k * 7) * 700, 880 + a * 220, 10 + hash(k * 3) * 16, (swerve - .5) * 2 * (.4 + .6 * a))
-  }
   // Headlights last, added on top: they glare over whatever is in front of them.
   ctx.globalCompositeOperation = 'lighter'
   for (const light of lights) light()
   ctx.globalCompositeOperation = 'source-over'
   // Our own car, just ahead of the camera: we ride behind it all the way.
-  if (f.car > .01) drawHero(ctx, v, f, dusk, moon, t)
+  if (f.car > .01) drawHero(ctx, v, f, dusk, moon, t, hero, put)
+  const peak = swerve
   ctx.globalAlpha = 1
   ctx.setTransform(scale, 0, 0, scale, 0, 0)
+  if (turn > .001) { drawBay(ctx, t, (1 - turn) * W); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over' }
+  // Level and still, over the road, clear of the sheet's text on the left.
+  if (hero.crash >= 0) drawGameOver(ctx, hero.crash)
   swerve = 0
+  return peak
 }
 
 // Oncoming traffic. Each vehicle comes round on its own loop; `lane` pushes it towards the centre line.
@@ -517,7 +563,7 @@ function panel(ctx: CanvasRenderingContext2D, v: View, u: number, z: number, u0:
 function drawVehicle(ctx: CanvasRenderingContext2D, v: View, car: Vehicle, z: number, dusk: number, fog: number, lit: number, lights: (() => void)[]) {
   if (fog <= .01) return
   const s = v.s0 + z
-  const u = (leftEdge(s) + centre(s)) / 2 + car.lane + (car.kind === 'truck' ? .9 * swerve : 0)
+  const u = (leftEdge(s) + centre(s)) / 2 + car.lane + (car.kind === 'truck' ? drift * swerve : 0)
   const light = Math.min(1.3, .35 + .65 * lit)
   ctx.globalAlpha = Math.min(1, fog * 1.4)
   const glass = shade('#3a4a66', (.5 + .5 * (1 - dusk)) * light)
@@ -619,6 +665,11 @@ const HERO_ROWS = HERO.length
 const HERO_W = 1.95
 const HERO_H = 1.12
 const HERO_Z = 2.8
+const WOOD = '#9a6a3c'
+const WOOD_DARK = '#5e3e22'
+const WHITEWASH = '#e4ded0'
+/** How far right we can go: the right tyre's outer face on the lip of the drop. */
+const HERO_EDGE = ROAD.rail + LIP - .05 - HERO_W / 2 - .35
 const heroSprites = new Map<string, HTMLCanvasElement>()
 
 function heroSprite(light: number, brake: boolean) {
@@ -648,31 +699,118 @@ function heroSprite(light: number, brake: boolean) {
   return c
 }
 
-function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number, moon: number, t: number) {
-  // We swerve with it, so it stays put on screen while the road moves under it.
-  const u = .35 + SWERVE_U * swerve * Math.min(1, 6 / HERO_Z + .35)
-  const foot = project(v, u, HERO_Z, 0)
+/** What the road's protection is in a form: nothing, paint only, or steel where it is needed. */
+export type Regime = 'none' | 'soft' | 'hard'
+export const regimeOf = (f: Form): Regime => f.coverage > .3 ? 'hard' : f.paintTint > .5 || f.paint > .5 ? 'soft' : 'none'
+
+/** Our car's state beyond the road: `crash` seconds since we went over (-1 if not), `spawn` 0→1 fading back in. */
+export type Hero = { crash: number; spawn: number }
+const HERO_IDLE: Hero = { crash: -1, spawn: 1 }
+/** The car's centre when its right side rubs the barrier. */
+const HERO_RAIL = ROAD.rail - .04 - HERO_W / 2
+
+/**
+ * Decide what a close pass with a lorry does to us. With nothing at the edge, a pass on a bend puts us
+ * over, and so does half of the rest. With paint, we keep to our side unless the bend is sharp and we
+ * are unlucky. With steel, we never go over.
+ */
+export function overTheEdge(f: Form, travel: number, n: number) {
+  const bend = Math.abs(curvature(travel + HERO_Z)) / C_MAX
+  const luck = hash(n * 7 + 3)
+  const regime = regimeOf(f)
+  if (regime === 'none') return bend > .3 || luck < .5
+  if (regime === 'soft') return bend > .35 && luck < .6
+  return false
+}
+
+function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number, moon: number, t: number, hero: Hero, put: (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => void) {
+  const regime = regimeOf(f)
+  const s = v.s0 + HERO_Z
+  const railed = regime === 'hard' && calm(s) < f.coverage
+  // When the lorry comes we squeeze over to the edge. Without steel, the right wheels stop on the lip;
+  // with steel there, we go further and the barrier pushes back: the car scrapes along it and bounces in.
+  let u = .35 + HERO_EDGE * swerve
+  let contact = 0
+  if (railed) {
+    // Usually we just tuck in short of it; on a close one we hit it and it throws us back.
+    const want = .35 + (HERO_RAIL - .35 + (extreme ? .45 : -.12)) * swerve
+    contact = Math.max(0, want - HERO_RAIL) / .45
+    u = Math.min(want, HERO_RAIL) - contact * .06 * (1 + Math.sin(t * 38))
+  }
+  // Over the edge: the car slides out past the lip, tips, and drops out of sight.
+  const c = hero.crash
+  let lift = 0, roll = 0, fade = 1
+  if (c >= 0) {
+    u += 3.2 * Math.min(c, 1.2) ** 2
+    lift = c < .3 ? .25 * Math.sin(c / .3 * Math.PI) : -9 * (c - .3) ** 2
+    roll = 1.6 * Math.min(1, c / 1.1) ** 1.5
+    fade = 1 - smooth((c - .9) / .6)
+  }
+  const alpha = f.car * fade * hero.spawn
+  const foot = project(v, u, HERO_Z, lift)
   const w = HERO_W * foot.k
   const h = HERO_H * foot.k
   // It leans out of the bends ahead and bobs a little on the stones while it moves.
-  const turn = curvature(v.s0 + 12) / C_MAX
-  const moving = Math.min(1, f.speed / 3)
-  const bob = moving * (Math.sin(t * 17) * 1.2 + Math.sin(t * 5.3) * (1 + 2 * f.gravel))
+  const turn = c >= 0 ? 0 : curvature(v.s0 + 12) / C_MAX
+  const moving = c >= 0 ? 0 : Math.min(1, f.speed / 3)
+  const bob = moving * (Math.sin(t * 17) * 1.2 + Math.sin(t * 5.3) * (1 + 2 * f.gravel)) + contact * Math.sin(t * 61) * (3 + 6 * f.stones + 3 * f.logs)
   const light = Math.round(Math.min(10, Math.max(2, 10 * ((1 - .55 * dusk) + .25 * moon))))
-  const brake = f.stop > .3 || f.speed < 1.5
+  const brake = f.stop > .3 || f.speed < 1.5 || c >= 0 || contact > .1
   const sprite = heroSprite(light, brake)
-  ctx.save()
-  ctx.globalAlpha = f.car
-  // A soft shadow under it.
-  ctx.fillStyle = 'rgb(0 0 0 / .45)'
-  ctx.beginPath(); ctx.ellipse(foot.x, foot.y - h * .02, w * .56, h * .07, 0, 0, Math.PI * 2); ctx.fill()
-  ctx.translate(foot.x + turn * 18, foot.y + bob)
-  ctx.transform(1, 0, -turn * .06, 1, 0, 0)
-  ctx.drawImage(sprite, -w / 2, -h, w, h)
-  ctx.restore()
+  if (alpha > .01) {
+    ctx.save()
+    ctx.globalAlpha = alpha
+    if (c < 0) {
+      ctx.fillStyle = 'rgb(0 0 0 / .45)'
+      ctx.beginPath(); ctx.ellipse(foot.x, foot.y - h * .02, w * .56, h * .07, 0, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.translate(foot.x + turn * 18, foot.y + bob)
+    ctx.rotate(roll)
+    ctx.transform(1, 0, -turn * .06, 1, 0, 0)
+    ctx.drawImage(sprite, -w / 2, -h, w, h)
+    ctx.restore()
+  }
+  // Gravel spitting off the edge from under the right wheel while we hug it, and a shower of it as we go.
+  const spit = c >= 0 ? Math.max(0, 1 - c / 1.4) : railed ? 0 : Math.max(0, swerve - .4) * 1.7
+  if (spit > .01) {
+    const wheel = project(v, (c >= 0 ? ROAD.rail + LIP : u + HERO_W / 2 - .1), HERO_Z, 0)
+    for (let k = 0; k < (c >= 0 ? 90 : 46); k++) {
+      const a = hash(k * 17 + Math.floor(t * 30))
+      const out = hash(k * 7)
+      put(k % 3 ? color.scree : k % 2 ? color.gravel : color.rock, k % 2 ? '.' : ':', wheel.x + out * w * .5, wheel.y - a * h * .25 + out * out * h * (c >= 0 ? 1.4 : .6), 8 + hash(k * 3) * 14, spit * (.4 + .6 * a) * f.car)
+    }
+  }
+  // What the hit throws up depends on what we hit: sparks off steel, splinters off timber, chips off rock.
+  if (contact > .01 && f.car > .01) {
+    const at = project(v, ROAD.rail - .02, HERO_Z, .5)
+    const total = f.rail + f.logs + f.stones || 1
+    const steel = f.rail / total, wood = f.logs / total, rock = f.stones / total
+    ctx.save()
+    if (steel > .05) {
+      ctx.globalCompositeOperation = 'lighter'
+      const g = ctx.createRadialGradient(at.x, at.y, 0, at.x, at.y, w * .35)
+      g.addColorStop(0, `rgb(255 220 150 / ${.6 * contact * steel * f.car})`)
+      g.addColorStop(1, 'rgb(255 140 40 / 0)')
+      ctx.fillStyle = g
+      ctx.fillRect(at.x - w * .35, at.y - w * .35, w * .7, w * .7)
+    }
+    for (let k = 0; k < 120; k++) {
+      const life = (t * 3 + hash(k * 13)) % 1
+      const kind = hash(k * 19)
+      const ang = -Math.PI / 2 - .2 - hash(k * 5) * 1.9
+      const speed = (.3 + hash(k * 11) * .9) * w * (kind < steel ? 1.1 : .7)
+      const x = at.x + Math.cos(ang) * speed * life
+      const y = at.y + Math.sin(ang) * speed * life + life * life * h * (kind < steel ? 1.1 : 1.6)
+      const a = Math.min(1, contact * 1.8) * f.car * (1 - life * .8)
+      if (kind < steel) put(life < .3 ? '#fff4d6' : life < .6 ? color.amber : '#ff6a2a', life < .25 ? '*' : life < .6 ? '+' : '.', x, y, 14 + (1 - life) * 26, a)
+      else if (kind < steel + wood) put(k % 3 ? WOOD : WOOD_DARK, k % 2 ? '-' : k % 3 ? '|' : 'x', x, y, 14 + (1 - life) * 20, a)
+      else if (rock > .05) put(k % 3 ? WHITEWASH : color.rock, k % 2 ? '.' : k % 3 ? ':' : '#', x, y, 12 + (1 - life) * 20, a)
+    }
+    ctx.restore()
+  }
   // Tail lights: on from dusk, bright when braking. Added on top, as light is.
-  const lamp = (brake ? .9 : .15 + .55 * dusk) * f.car
-  if (lamp > .02) {
+  const lamp = (brake ? .9 : .15 + .55 * dusk) * alpha
+  if (lamp > .02 && c < 0) {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
     for (const side of [-1, 1]) {
@@ -687,6 +825,151 @@ function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number
     }
     ctx.restore()
   }
+}
+
+const GO_X = 1300
+const GO_Y = 690
+/** The arcade card after we go over: GAME OVER, then a countdown to try again. */
+function drawGameOver(ctx: CanvasRenderingContext2D, c: number) {
+  const show = smooth((c - 1.4) / .3) * (1 - smooth((c - 4.1) / .3))
+  if (show <= .01) return
+  ctx.save()
+  ctx.globalAlpha = show * .55
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, W, H)
+  ctx.globalAlpha = show
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = '900 150px ui-monospace, Menlo, Consolas, monospace'
+  ctx.fillStyle = '#7c1220'
+  ctx.fillText('GAME OVER', GO_X + 7, GO_Y + 7)
+  ctx.fillStyle = color.hard
+  ctx.fillText('GAME OVER', GO_X, GO_Y)
+  const left = Math.max(1, Math.ceil(4 - c))
+  if (Math.floor(c * 3) % 2 === 0) {
+    ctx.font = '700 54px ui-monospace, Menlo, Consolas, monospace'
+    ctx.fillStyle = color.amber
+    ctx.fillText(`CONTINUE? ${left}`, GO_X, GO_Y + 120)
+  }
+  ctx.restore()
+}
+
+
+// The viewpoint: a bay at night, the full moon high over it and its road of silver on the water,
+// a dark headland on the left with a lighthouse, the coast on the right lit with a town along the shore.
+const BAY_HORIZON = 560
+const MOON = { x: 1330, y: 210, r: 30 }
+const SHORE = (() => { const r = rng(91); return Array.from({ length: 150 }, () => ({ x: r(), up: r() ** 2.4, j: r() })) })()
+/** The coast on the right: rising from the shore to a ridge, in sheet pixels. */
+const coastTop = (x: number) => BAY_HORIZON + 4 - 34 * smooth((x - 1040) / 80) - Math.max(0, (x - 1080) / (W - 1080)) ** 1.3 * 260 - 18 * Math.sin(x / 70) * Math.max(0, (x - 1150) / 800)
+const headTop = (x: number) => BAY_HORIZON + 2 - (14 + Math.max(0, 1 - ((x - 260) / 300) ** 2) * 95 + Math.max(0, 1 - ((x - 520) / 180) ** 2) * 40) * (1 - smooth((x - 600) / 150))
+
+function drawBay(ctx: CanvasRenderingContext2D, t: number, dx: number) {
+  ctx.save()
+  ctx.translate(dx, 0)
+  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.globalAlpha = 1
+  const put = (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => {
+    if (alpha <= .01) return
+    ctx.globalAlpha = Math.min(1, alpha)
+    ctx.drawImage(sprite(tint), 64 * GLYPHS.indexOf(glyph), 0, 64, 64, x - size / 2, y - size / 2, size, size)
+  }
+  const glow = (x: number, y: number, r: number, sx: number, sy: number, stops: [number, string][]) => {
+    ctx.save(); ctx.translate(x, y); ctx.scale(sx, sy)
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r)
+    for (const [at, c] of stops) g.addColorStop(at, c)
+    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(-r, -r, 2 * r, 2 * r)
+    ctx.restore()
+  }
+  // Sky: deep blue, a little paler towards the moon and the horizon.
+  const sky = ctx.createLinearGradient(0, 0, 0, BAY_HORIZON)
+  sky.addColorStop(0, '#02040c')
+  sky.addColorStop(.7, '#0a1530')
+  sky.addColorStop(1, '#122046')
+  ctx.fillStyle = sky
+  ctx.fillRect(0, 0, W, BAY_HORIZON + 2)
+  for (const star of STARS) {
+    const x = ((star.a + 3.2) / 6.4) * W
+    const y = 20 + star.y * (BAY_HORIZON - 120)
+    const away = Math.hypot(x - MOON.x, y - MOON.y)
+    put(color.star, star.g, x, y, 8 + star.j * 6, Math.min(1, away / 500) * .8 * (.4 + .6 * Math.abs(Math.sin(t * .7 + star.j * 50))))
+  }
+  // The moon: a wide pale halo, a tighter glow, a white disc.
+  ctx.globalCompositeOperation = 'lighter'
+  glow(MOON.x, MOON.y, 520, 1, 1, [[0, '#3a4c7a66'], [.4, '#1c284a33'], [1, '#0a102000']])
+  glow(MOON.x, MOON.y, MOON.r * 4.5, 1, 1, [[0, '#f4f2e8cc'], [.25, '#b8c6e866'], [1, '#6a7cb000']])
+  glow(MOON.x, MOON.y, MOON.r, 1, 1, [[0, '#ffffff'], [.8, '#fbf8ee'], [1, '#e8ecf800']])
+  ctx.globalCompositeOperation = 'source-over'
+  // The sea, and the moon's road on it: a bright seam at the horizon, then a column breaking into glints.
+  ctx.globalAlpha = 1
+  const sea = ctx.createLinearGradient(0, BAY_HORIZON, 0, H)
+  sea.addColorStop(0, '#0e1a3a')
+  sea.addColorStop(.4, '#060c1e')
+  sea.addColorStop(1, '#02040a')
+  ctx.fillStyle = sea
+  ctx.fillRect(0, BAY_HORIZON, W, H - BAY_HORIZON)
+  ctx.save()
+  ctx.beginPath(); ctx.rect(0, BAY_HORIZON + 1, W, H); ctx.clip()
+  ctx.globalCompositeOperation = 'lighter'
+  glow(MOON.x, BAY_HORIZON + 2, 140, 2.6, .07, [[0, '#e8eefcbb'], [1, '#9fb4e000']])
+  glow(MOON.x, BAY_HORIZON + 2, H - BAY_HORIZON, .06, 1, [[0, '#c8d4f055'], [.5, '#8fa2d022'], [1, '#6a7cb000']])
+  ctx.restore()
+  ctx.globalCompositeOperation = 'lighter'
+  for (const g of GLINTS) {
+    const y = BAY_HORIZON + 5 + g.y * (H - BAY_HORIZON)
+    const across = (g.x - .5) * 2
+    const x = MOON.x + across * (MOON.r * 1.3 + g.y * 170) * (Math.abs(across) < .7 ? 1 : 1.7)
+    const w = 8 + g.y * 32 + (1 - Math.abs(across)) * 12
+    put(g.j < .5 ? '#f4f6ff' : '#b8c6e8', g.j < .5 ? '-' : '=', x, y, w, (1 - Math.abs(across) * .75) * (.2 + .8 * Math.abs(Math.sin(t * 1.6 + g.j * 40))))
+  }
+  ctx.globalCompositeOperation = 'source-over'
+  // The headland on the left and the coast on the right, black against the sky.
+  ctx.globalAlpha = 1
+  ctx.fillStyle = '#03050b'
+  ctx.beginPath(); ctx.moveTo(-10, BAY_HORIZON + 4)
+  for (let x = -10; x <= 760; x += 10) ctx.lineTo(x, headTop(x))
+  ctx.lineTo(760, BAY_HORIZON + 4); ctx.closePath(); ctx.fill()
+  ctx.fillStyle = '#04060d'
+  ctx.beginPath(); ctx.moveTo(1040, BAY_HORIZON + 6)
+  for (let x = 1040; x <= W + 10; x += 10) ctx.lineTo(x, coastTop(x))
+  ctx.lineTo(W + 10, BAY_HORIZON + 6); ctx.closePath(); ctx.fill()
+  // A faint rim of moonlight on the ridges.
+  for (let x = 1100; x <= W; x += 12) put(color.star, '.', x, coastTop(x), 8, .25 * hash(x))
+  for (let x = 0; x <= 740; x += 12) put(color.star, '.', x, headTop(x), 8, .2 * hash(x + 9))
+  // Lights: the town strung along the shore and up the slope, the promenade in a row, their streaks on
+  // the water; a lighthouse on the headland's tip and two boats out in the bay.
+  ctx.globalCompositeOperation = 'lighter'
+  for (const p of SHORE) {
+    const x = 1090 + p.x * (W - 1090)
+    const top = coastTop(x)
+    const y = BAY_HORIZON - p.up * (BAY_HORIZON - top - 14)
+    const warm = p.j < .7
+    const a = .55 + .45 * Math.sin(t * 2 + p.j * 60) ** 2
+    put(warm ? color.amber : '#f4f2e8', '.', x, y, 9 + p.j * 6, a)
+    if (p.up < .12) put(warm ? color.amber : '#f4f2e8', '|', x, BAY_HORIZON + 16 + p.j * 10, 10 + p.j * 10, a * .35)
+  }
+  for (let k = 0; k < 26; k++) {
+    const x = 1110 + k * ((W - 1110) / 26)
+    put('#fff1c4', '.', x, BAY_HORIZON + 2, 10, .9)
+    put('#fff1c4', '|', x, BAY_HORIZON + 18, 14, .25)
+  }
+  for (let k = 0; k < 12; k++) put(color.amber, '.', 420 + k * 26 + hash(k) * 12, BAY_HORIZON - 2 - hash(k + 3) * 14, 9, .7)
+  const beam = Math.max(0, Math.sin(t * 1.4)) ** 6
+  glow(735, headTop(735) - 5, 22, 1, 1, [[0, `rgb(255 250 230 / ${.3 + .7 * beam})`], [1, 'rgb(255 250 230 / 0)']])
+  for (const [x, y] of [[880, 640], [1560, 700]]) { put(color.paint, '.', x, y, 10, .8); put(color.amber, '.', x + 8, y, 8, .6) }
+  ctx.globalCompositeOperation = 'source-over'
+  // The viewpoint: a stone parapet across the bottom, our car pulled in against it, facing the bay.
+  ctx.globalAlpha = 1
+  ctx.fillStyle = '#07080c'
+  ctx.fillRect(0, H - 120, W, 120)
+  for (let x = 0; x < W; x += 22) put(color.rock, hash(x) < .5 ? '#' : '=', x + 11, H - 118, 22, .35)
+  for (let x = 0; x < W; x += 60) { ctx.fillStyle = '#0c0d12'; ctx.fillRect(x, H - 128, 56, 12) }
+  const car = heroSprite(4, false)
+  const cw = 380, ch = cw * HERO_H / HERO_W
+  ctx.globalAlpha = 1
+  ctx.drawImage(car, MOON.x - cw / 2 + 120, H - 40 - ch, cw, ch)
+  ctx.restore()
 }
 
 /** A traffic officer in our lane: reflective vest, white helmet, right arm up with a STOP paddle. */
@@ -816,6 +1099,11 @@ export class RoadField {
   private travel = 85
   private last = performance.now()
   private start = performance.now()
+  // The game: when we last went over (ms, -1 if we are on the road), when we came back, which pass this is.
+  private crashAt = -1
+  private spawnAt = -1e9
+  private armed = true
+  private passes = 0
 
   constructor(private canvas: HTMLCanvasElement, private reduced: boolean, name: FormName, dusk: number) {
     this.from = this.to = { ...FORMS[name], dusk }
@@ -842,14 +1130,31 @@ export class RoadField {
 
   private current(now: number) {
     const k = this.reduced ? 1 : Math.min(1, (now - this.changed) / EASE_MS)
-    return mix(this.from, this.to, 1 - (1 - k) ** 3)
+    const out = mix(this.from, this.to, 1 - (1 - k) ** 3)
+    // Turning in at the viewpoint takes its time: a slow pan, not a cut.
+    const kb = this.reduced ? 1 : Math.min(1, (now - this.changed) / TURN_MS)
+    out.bay = lerp(this.from.bay, this.to.bay, smooth(kb))
+    return out
   }
 
   private paint(now: number) {
     const light = this.current(now)
-    if (!this.reduced) this.travel += Math.min(.1, (now - this.last) / 1000) * light.speed
+    let crash = this.crashAt < 0 ? -1 : (now - this.crashAt) / 1000
+    // After the countdown, start again a little further on, with the lorry gone.
+    if (crash > 4.4) { this.crashAt = -1; crash = -1; this.travel += 60; this.spawnAt = now; this.armed = false }
+    // Once over the edge the camera stops at the lip and watches.
+    const pace = crash < 0 ? 1 : Math.max(0, 1 - crash * 2.5)
+    if (!this.reduced) this.travel += Math.min(.1, (now - this.last) / 1000) * light.speed * pace
     this.last = now
-    draw(this.canvas, light, this.travel, (now - this.start) / 1000)
+    const spawn = Math.min(1, (now - this.spawnAt) / 900)
+    const peak = draw(this.canvas, light, this.travel, (now - this.start) / 1000, { crash, spawn })
+    // A close pass: decide, once per lorry, whether this one puts us over.
+    if (this.reduced || crash >= 0) return
+    if (peak > .8 && this.armed) {
+      this.armed = false
+      this.passes++
+      if (light.car > .6 && overTheEdge(light, this.travel, this.passes)) this.crashAt = now
+    } else if (peak < .2) this.armed = true
   }
 
   private loop = () => {

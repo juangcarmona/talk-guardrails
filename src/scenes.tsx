@@ -118,7 +118,7 @@ export const scenes: Scene[] = [
     </div>,
   },
   {
-    id: 'surfaces', act: 3, title: ['Four enforcement surfaces', 'Cuatro superficies de control'], steps: 5, layout: 'full', form: step => step >= 4 ? 'stop' : 'barrier',
+    id: 'surfaces', act: 3, title: ['Four enforcement surfaces', 'Cuatro superficies de control'], steps: 5, layout: 'full', form: step => (['stones', 'stones', 'logs', 'barrier', 'stop', 'stop'] as const)[step],
     content: t => <>
       <h2>{t('Four enforcement surfaces', 'Cuatro superficies de control')}</h2>
       <ol className="surfaces compact">
@@ -137,7 +137,7 @@ export const scenes: Scene[] = [
     </>,
   },
   {
-    id: 'build', act: 3, title: ['1 · Build-time: the build fails', '1 · En build: la build falla'], steps: 0, layout: 'full', form: () => 'dim',
+    id: 'build', act: 3, title: ['1 · Build-time: the build fails', '1 · En build: la build falla'], steps: 0, layout: 'full', form: () => 'dimStones',
     content: t => <>
       <h2>{t('1 · Build-time: the build fails', '1 · En build: la build falla')}</h2>
       <table className="rules hard">
@@ -152,7 +152,7 @@ export const scenes: Scene[] = [
     </>,
   },
   {
-    id: 'build-console', act: 3, title: ['A dependency edge, rejected at project load', 'Una dependencia, rechazada al cargar el proyecto'], steps: 0, layout: 'full', form: () => 'dim',
+    id: 'build-console', act: 3, title: ['A dependency edge, rejected at project load', 'Una dependencia, rechazada al cargar el proyecto'], steps: 0, layout: 'full', form: () => 'dimStones',
     content: t => <>
       <h2>{t('A dependency edge, rejected at project load', 'Una dependencia, rechazada al cargar el proyecto')}</h2>
       <Term label="Directory.Build.props" lines={[
@@ -167,7 +167,7 @@ export const scenes: Scene[] = [
     </>,
   },
   {
-    id: 'commit-ci', act: 3, title: ['2 · Commit & 3 · CI', '2 · Commit y 3 · CI'], steps: 2, layout: 'full', form: () => 'dim',
+    id: 'commit-ci', act: 3, title: ['2 · Commit & 3 · CI', '2 · Commit y 3 · CI'], steps: 2, layout: 'full', form: step => step >= 2 ? 'dim' : 'dimLogs',
     content: t => <>
       <h2>{t('2 · Commit & 3 · CI: the change won’t exist, won’t land', '2 · Commit y 3 · CI: el cambio no existirá, no entrará')}</h2>
       <div className="pair">
@@ -207,7 +207,7 @@ export const scenes: Scene[] = [
     </>,
   },
   {
-    id: 'agent', act: 3, title: ['4 · Agent harness: the agent is refused', '4 · Harness del agente: el agente es rechazado'], steps: 4, layout: 'left', form: () => 'barrier',
+    id: 'agent', act: 3, title: ['4 · Agent harness: the agent is refused', '4 · Harness del agente: el agente es rechazado'], steps: 4, layout: 'left', form: () => 'stop',
     content: t => <>
       <h2>{t('4 · Agent harness: the agent is refused', '4 · Harness del agente: el agente es rechazado')}</h2>
       <List kind="hard" items={[
@@ -255,7 +255,7 @@ export const scenes: Scene[] = [
     </div>,
   },
   {
-    id: 'contact', act: 0, title: ['Write to me', 'Escríbeme'], steps: 0, layout: 'center', form: () => 'parked',
+    id: 'contact', act: 0, title: ['Write to me', 'Escríbeme'], steps: 0, layout: 'center', form: () => 'mirador',
     content: t => <div className="closing">
       <p className="eyebrow">{t('Questions, war stories, your next soft → hard candidate', 'Dudas, batallitas, tu próximo candidato blando → duro')}</p>
       <QrCode value={`mailto:${EMAIL}`} />

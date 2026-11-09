@@ -12,6 +12,7 @@ Seen from the driver's seat. We drive on the right, as in Spain: the rock wall o
 | Curve chevrons (*paneles direccionales*) on the outside of the sharp bends | Blue panel, white `<` `>`, retroreflective glow at night | Soft guardrails too: a warning, however bright, does not hold the car |
 | W-beam barrier between the road and the ravine | `#` `=` `@` in red and white 2 m panels, `|` posts, amber reflector `*` | Hard guardrails: they stop you |
 | Rock wall and scree | A solid, opaque face (taller, 10 m), hazing towards the far ridge with distance; shrubs on top and at its foot | The mountain: what is at stake if you leave the road |
+| The close pass (three outcomes) | With nothing at the edge the lorry takes the middle and we go over on a bend: the car tips off the lip, GAME OVER, CONTINUE? 3-2-1, and we start again. With paint the lorry keeps its side and we usually hold the lip, but now and then a bend puts us over. With hard protection we tuck in short of it; only on a close one (sharp bend or bad luck, about one pass in three) do we hit it and get thrown back in: rock chips off boulders, splinters off timber, sparks off steel | Nothing, soft, hard: the same scare, three endings |
 | Our car, just ahead of the camera | A red open roadster seen from behind, two heads over the windscreen, solid cells with a glyph in each; leans out of the bends, brake lights at the stop | Us, driving the change: the protagonist of the talk |
 | Tail lights ahead, headlights oncoming | `*` `@` red and amber | Changes moving through the system (later: the agent) |
 | Ridges, sun glow, stars, village lights in the valley | Silhouettes, `.` `+` `*` | The light, never content |
@@ -29,10 +30,14 @@ Each form says how much of the road the barrier covers, measured by how sharp th
 | `gravel` | None, and no paint or signs: an unmade track of loose stone, lorries coming | Title, definition, first step of two kinds |
 | `road` | Only the sharpest bends | (spare) |
 | `paint` | None; paint and chevrons in blue | Soft act |
-| `barrier` | Every bend that matters; straights still open to the ravine | Hard act |
+| `stones` | Hard level 1: whitewashed boulders on the bends | Surfaces 1 · Build, build sheets (`dimStones`) |
+| `logs` | Hard level 2: timber fence, the mountain kind | Surfaces 2 · Commit, commit sheet (`dimLogs`) |
+| `barrier` | Hard level 3: steel W-beam on every bend that matters | Surfaces 3 · CI, refuses, philosophy |
+| `stop` | Hard level 4: the officer stops us | Surfaces 4 · Agent, agent harness |
 | `steel` | The whole ravine | The black spot, after: paint became steel |
 | `dim` | As `road`, dimmed and slower | Text-heavy sheets |
-| `parked` | The whole ravine, no traffic | Closing question, at night |
+| `parked` | The whole ravine, no traffic | (spare) |
+| `mirador` | The car pulls in at a viewpoint and the camera pans right onto the bay: full moon, its silver road on the water, a dark headland with a lighthouse, the town lit along the shore, the car parked against the parapet | Closing: write to me |
 
 That is the talk in one picture: the road authority puts steel first on the bends where people go over, and the bends where it keeps happening (the *punto negro*) are where a soft rule must become hard.
 
