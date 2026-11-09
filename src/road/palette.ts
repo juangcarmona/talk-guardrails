@@ -15,6 +15,9 @@ export const color = {
   leaf: '#5b7340',
   leafDark: '#33452a',
   pine: '#2c3d2a',
+  /** Loose stone on an unmade road: pale chips and darker pebbles. */
+  gravel: '#b49c80',
+  pebble: '#7a6a58',
 } as const
 
 // Sky and land at sunset (0) and at night (1); the talk walks from one to the other.
@@ -37,6 +40,8 @@ export const sky = {
   cliffLow: ['#2a3150', '#05070c'],
   wall: ['#3a2d33', '#0c0d11'],
   road: ['#24222b', '#101116'],
+  /** An unmade track: dusty, warmer and paler than asphalt. */
+  track: ['#4a3f37', '#16140f'],
 } as const
 
 /** Mix two #rrggbb colours, as #rrggbb. */

@@ -12,6 +12,7 @@ Seen from the driver's seat. We drive on the right, as in Spain: the rock wall o
 | Curve chevrons (*paneles direccionales*) on the outside of the sharp bends | Blue panel, white `<` `>`, retroreflective glow at night | Soft guardrails too: a warning, however bright, does not hold the car |
 | W-beam barrier between the road and the ravine | `#` `=` `@` in red and white 2 m panels, `|` posts, amber reflector `*` | Hard guardrails: they stop you |
 | Rock wall and scree | A solid, opaque face (taller, 10 m), hazing towards the far ridge with distance; shrubs on top and at its foot | The mountain: what is at stake if you leave the road |
+| Our car, just ahead of the camera | A red open roadster seen from behind, two heads over the windscreen, solid cells with a glyph in each; leans out of the bends, brake lights at the stop | Us, driving the change: the protagonist of the talk |
 | Tail lights ahead, headlights oncoming | `*` `@` red and amber | Changes moving through the system (later: the agent) |
 | Ridges, sun glow, stars, village lights in the valley | Silhouettes, `.` `+` `*` | The light, never content |
 
@@ -25,7 +26,8 @@ Each form says how much of the road the barrier covers, measured by how sharp th
 
 | Form | Barrier | Used for |
 | --- | --- | --- |
-| `road` | Only the sharpest bends | Title, definition |
+| `gravel` | None, and no paint or signs: an unmade track of loose stone, lorries coming | Title, definition, first step of two kinds |
+| `road` | Only the sharpest bends | (spare) |
 | `paint` | None; paint and chevrons in blue | Soft act |
 | `barrier` | Every bend that matters; straights still open to the ravine | Hard act |
 | `steel` | The whole ravine | The black spot, after: paint became steel |

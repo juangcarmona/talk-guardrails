@@ -35,7 +35,7 @@ function Chips({ items, kind }: { items: string[]; kind: 'soft' | 'hard' }) {
 
 export const scenes: Scene[] = [
   {
-    id: 'title', act: 0, title: ['Soft & Hard Guardrails', 'Guardarraíles blandos y duros'], steps: 0, layout: 'cover', form: () => 'road',
+    id: 'title', act: 0, title: ['Soft & Hard Guardrails', 'Guardarraíles blandos y duros'], steps: 0, layout: 'cover', form: () => 'gravel',
     content: t => <>
       <div className="title">
         <p className="eyebrow">{t('Guardrails for coding agents', 'Guardarraíles para agentes de código')}</p>
@@ -53,7 +53,7 @@ export const scenes: Scene[] = [
     </>,
   },
   {
-    id: 'definition', act: 1, title: ['What are guardrails?', '¿Qué son los guardarraíles?'], steps: 0, layout: 'center', form: () => 'road',
+    id: 'definition', act: 1, title: ['What are guardrails?', '¿Qué son los guardarraíles?'], steps: 0, layout: 'center', form: () => 'gravel',
     content: t => <div className="statement">
       <p className="eyebrow">{t('What are guardrails?', '¿Qué son los guardarraíles?')}</p>
       <h2 className="mid">{t('Guardrails are constraints that keep changes within acceptable boundaries', 'Los guardarraíles son restricciones que mantienen los cambios dentro de límites aceptables')}</h2>
@@ -61,7 +61,7 @@ export const scenes: Scene[] = [
     </div>,
   },
   {
-    id: 'two-kinds', act: 1, title: ['Two kinds of guardrails', 'Dos tipos de guardarraíles'], steps: 2, layout: 'full', form: step => (['road', 'paint', 'barrier'] as const)[step],
+    id: 'two-kinds', act: 1, title: ['Two kinds of guardrails', 'Dos tipos de guardarraíles'], steps: 2, layout: 'full', form: step => (['gravel', 'paint', 'barrier'] as const)[step],
     content: t => <>
       <h2>{t('Two kinds of guardrails', 'Dos tipos de guardarraíles')}</h2>
       <div className="pair">

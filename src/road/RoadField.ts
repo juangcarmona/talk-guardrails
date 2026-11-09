@@ -85,14 +85,20 @@ function flinch(d: number) {
 const WALL_BACK = 4.6
 const WALL_H = 10
 
-type Particle = { s: number; u: number; h: number; glyph: Glyph; jitter: number; tint: string; scale?: number }
+type Particle = { s: number; u: number; h: number; glyph: Glyph; jitter: number; tint: string; scale?: number; road?: boolean; loose?: boolean }
 
 function build(): Particle[] {
   const r = rng(20261106)
   const out: Particle[] = []
   const pick = (glyphs: Glyph[]) => glyphs[Math.floor(r() * glyphs.length)]
   // Asphalt grain.
-  for (let i = 0; i < 1400; i++) out.push({ s: r() * LENGTH, u: ROAD.leftEdge + r() * (ROAD.rail - ROAD.leftEdge), h: 0, glyph: pick(['.', '.', ':']), jitter: r(), tint: color.asphalt })
+  for (let i = 0; i < 1400; i++) out.push({ s: r() * LENGTH, u: ROAD.leftEdge + r() * (ROAD.rail - ROAD.leftEdge), h: 0, glyph: pick(['.', '.', ':']), jitter: r(), tint: color.asphalt, road: true })
+  // Loose stone, only on the unmade track at the start: denser, paler, with ruts where wheels have gone.
+  for (let i = 0; i < 3200; i++) {
+    const rut = r() < .45
+    const u = rut ? [-3.6, -2.2, -.4, 1.0][Math.floor(r() * 4)] + (r() - .5) * .5 : ROAD.leftEdge + r() * (ROAD.rail - ROAD.leftEdge)
+    out.push({ s: r() * LENGTH, u, h: 0, glyph: rut ? pick(['.', '-', '.']) : pick(['.', ':', '.', '*', 'x']), jitter: r(), tint: rut ? color.pebble : r() < .6 ? color.gravel : color.pebble, road: true, loose: true })
+  }
   // Shrubs: a cluster of leaf glyphs. Clinging to the cliff edge, on top of the cut and at its foot.
   const bush = (s: number, u: number, h: number, size: number) => {
     for (let j = 0; j < 7 + size * 8; j++) out.push({ s: s + (r() - .5) * size, u: u + (r() - .5) * size, h: h + r() * size * .8, glyph: pick(['#', '@', '%', '&', '*']), jitter: r(), tint: r() < .6 ? color.leafDark : color.leaf, scale: 2.4 })
@@ -324,7 +330,7 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   // Wall and road are solid: no seams, nothing showing through. Distance and dimming tint them
   // towards the far ridge instead of making them transparent.
   const wallBase = blend(sky.wall, dusk)
-  const roadBase = blend(sky.road, dusk)
+  const roadBase = tone(blend(sky.road, dusk), blend(sky.track, dusk), f.gravel)
   const haze = blend(sky.ridgeFar, dusk)
   const shade = (base: string, z: number) => tone(tone(tone(base, '#3b4458', .28 * moon), haze, smooth((z / LENGTH - .55) / .45)), blend(sky.ground, 1), (1 - f.land) * .5)
   const solid = (a: Edge, b: Edge, c: Edge, d: Edge, fill: string) => {
@@ -386,15 +392,16 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     // Then whatever stands on the strip just drawn, far to near.
     for (; li < land.length && land[li].z >= z; li++) {
       const { z: lz, p } = land[li]
+      if (p.loose && f.gravel < .01) continue
       // The narrowing pushes the cut into the road; the asphalt squeezes between the cut and the barrier.
       const at = travel + lz
       const u = p.u < ROAD.leftEdge ? p.u + PINCH_WIDTH * pinch(at)
-        : p.tint === color.asphalt ? ROAD.rail - (ROAD.rail - p.u) * (ROAD.rail - leftEdge(at)) / (ROAD.rail - ROAD.leftEdge) : p.u
+        : p.road ? ROAD.rail - (ROAD.rail - p.u) * (ROAD.rail - leftEdge(at)) / (ROAD.rail - ROAD.leftEdge) : p.u
       const pt = project(v, u, lz, p.h)
       const sc = p.scale ?? 1
       const size = Math.min(30 * sc, Math.max(4, pt.k * .16 * sc))
-      const alpha = fogOf(lz) * ((p.tint === color.asphalt ? .3 : .45) + .35 * p.jitter) * lit(lz)
-      put(p.tint, p.glyph, pt.x, pt.y + (p.jitter - .5) * 2, size, alpha * f.land)
+      const alpha = fogOf(lz) * ((p.road ? .3 : .45) + .35 * p.jitter) * lit(lz) * (p.loose ? f.gravel * 1.6 : p.road ? 1 - .6 * f.gravel : 1)
+      put(p.tint, p.glyph, pt.x, pt.y + (p.jitter - .5) * 2, size * (p.loose ? 1.15 : 1), alpha * f.land)
     }
     for (; si >= 0 && signs[si].z >= z; si--) {
       const sign = signs[si]
@@ -460,6 +467,8 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   ctx.globalCompositeOperation = 'lighter'
   for (const light of lights) light()
   ctx.globalCompositeOperation = 'source-over'
+  // Our own car, just ahead of the camera: we ride behind it all the way.
+  if (f.car > .01) drawHero(ctx, v, f, dusk, moon, t)
   ctx.globalAlpha = 1
   ctx.setTransform(scale, 0, 0, scale, 0, 0)
   swerve = 0
@@ -570,6 +579,114 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: View, car: Vehicle, z: nu
       ctx.restore()
     }
   })
+}
+
+// Our car: a red open roadster seen from behind, two heads over the windscreen, drawn as a block of
+// glyphs. Left half only; the right mirrors it, with the passenger's hair in another colour.
+const HERO_HALF = [
+  '             dd     ',
+  '            dddd    ',
+  '      wwwwwwddddwwww',
+  '    wwxxxxxxddddxxxx',
+  '   hhhhhhhhhhhhhhhhh',
+  ' hhRRRRRRRRRRRRRRRRR',
+  'hRRRRRRRRRRRRRRRRRRR',
+  'rkttttttaRRRRRRRRRRR',
+  'rkttttttaRRRRRRRRppp',
+  'rrrrrrrrrrrrrrrrrppp',
+  'kggggggggggggggggggg',
+  'kkkkkk kkkkkkkkkkkkk',
+  'kkkkkk   g          ',
+]
+const HERO = HERO_HALF.map(row => row + [...row].reverse().join('').replace(/d/g, 'b'))
+const HERO_CELL: Record<string, { fill: string; ink: string; glyph: string }> = {
+  R: { fill: '#c41f33', ink: '#ff5a64', glyph: '#' },
+  h: { fill: '#e8384a', ink: '#ffb0b4', glyph: '=' },
+  r: { fill: '#7c1220', ink: '#c41f33', glyph: ':' },
+  k: { fill: '#0e0f13', ink: '#3a3d46', glyph: '.' },
+  g: { fill: '#8b929c', ink: '#e8ecf0', glyph: '=' },
+  t: { fill: '#9a0f1c', ink: '#ff3b3b', glyph: '@' },
+  a: { fill: '#b8660a', ink: '#ffb21c', glyph: '*' },
+  p: { fill: '#e9e6dc', ink: '#2a2d33', glyph: '-' },
+  w: { fill: '#3a4a66', ink: '#b8d0ec', glyph: '-' },
+  x: { fill: '#24151a', ink: '#4a2a30', glyph: '.' },
+  d: { fill: '#1e1712', ink: '#4a3a2c', glyph: '%' },
+  b: { fill: '#6a4420', ink: '#c08a4a', glyph: '%' },
+}
+const HERO_COLS = HERO[0].length
+const HERO_ROWS = HERO.length
+/** Car width and height in metres, the glyph cells stretched to fit. */
+const HERO_W = 1.95
+const HERO_H = 1.12
+const HERO_Z = 2.8
+const heroSprites = new Map<string, HTMLCanvasElement>()
+
+function heroSprite(light: number, brake: boolean) {
+  const key = `${light}|${brake}`
+  const hit = heroSprites.get(key)
+  if (hit) return hit
+  const cw = 14, ch = 24
+  const c = document.createElement('canvas')
+  c.width = HERO_COLS * cw
+  c.height = HERO_ROWS * ch
+  const g = c.getContext('2d')!
+  g.font = `700 ${ch * .9}px ui-monospace, Menlo, Consolas, monospace`
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  const k = light / 10
+  HERO.forEach((row, y) => [...row].forEach((cell, x) => {
+    const spec = HERO_CELL[cell]
+    if (!spec) return
+    const glow = cell === 't' && brake
+    // Solid behind, a glyph on top: it reads as a car from the back of the room and as text up close.
+    g.fillStyle = shade(spec.fill, glow ? 1.6 : k)
+    g.fillRect(x * cw, y * ch, cw + .5, ch + .5)
+    g.fillStyle = shade(spec.ink, glow ? 1.4 : Math.min(1.2, k * 1.1))
+    g.fillText(spec.glyph, x * cw + cw / 2, y * ch + ch / 2 + 1)
+  }))
+  heroSprites.set(key, c)
+  return c
+}
+
+function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number, moon: number, t: number) {
+  // We swerve with it, so it stays put on screen while the road moves under it.
+  const u = .35 + SWERVE_U * swerve * Math.min(1, 6 / HERO_Z + .35)
+  const foot = project(v, u, HERO_Z, 0)
+  const w = HERO_W * foot.k
+  const h = HERO_H * foot.k
+  // It leans out of the bends ahead and bobs a little on the stones while it moves.
+  const turn = curvature(v.s0 + 12) / C_MAX
+  const moving = Math.min(1, f.speed / 3)
+  const bob = moving * (Math.sin(t * 17) * 1.2 + Math.sin(t * 5.3) * (1 + 2 * f.gravel))
+  const light = Math.round(Math.min(10, Math.max(2, 10 * ((1 - .55 * dusk) + .25 * moon))))
+  const brake = f.stop > .3 || f.speed < 1.5
+  const sprite = heroSprite(light, brake)
+  ctx.save()
+  ctx.globalAlpha = f.car
+  // A soft shadow under it.
+  ctx.fillStyle = 'rgb(0 0 0 / .45)'
+  ctx.beginPath(); ctx.ellipse(foot.x, foot.y - h * .02, w * .56, h * .07, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.translate(foot.x + turn * 18, foot.y + bob)
+  ctx.transform(1, 0, -turn * .06, 1, 0, 0)
+  ctx.drawImage(sprite, -w / 2, -h, w, h)
+  ctx.restore()
+  // Tail lights: on from dusk, bright when braking. Added on top, as light is.
+  const lamp = (brake ? .9 : .15 + .55 * dusk) * f.car
+  if (lamp > .02) {
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    for (const side of [-1, 1]) {
+      const x = foot.x + turn * 18 + side * w * (12.5 / HERO_COLS)
+      const y = foot.y + bob - h * (1 - 9 / HERO_ROWS)
+      const r = w * .16
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+      g.addColorStop(0, `rgb(255 60 60 / ${lamp * .7})`)
+      g.addColorStop(1, 'rgb(255 40 40 / 0)')
+      ctx.fillStyle = g
+      ctx.fillRect(x - r, y - r, r * 2, r * 2)
+    }
+    ctx.restore()
+  }
 }
 
 /** A traffic officer in our lane: reflective vest, white helmet, right arm up with a STOP paddle. */

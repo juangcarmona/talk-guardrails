@@ -14,15 +14,21 @@ export type Form = {
   speed: number
   /** 1 tints the painted lines in the soft blue. */
   paintTint: number
+  /** 1 turns the road into bare gravel: no asphalt, no paint, nothing at the edge. */
+  gravel: number
+  /** How clearly our own car shows in front of us: 1 full, lower behind text-heavy sheets. */
+  car: number
 }
 
-const base: Form = { paint: 1, dash: 1, rail: 1, chevron: 1, land: 1, sky: 1, head: 1, coverage: .35, speed: 7, paintTint: 0, stop: 0 }
+const base: Form = { paint: 1, dash: 1, rail: 1, chevron: 1, land: 1, sky: 1, head: 1, coverage: .35, speed: 7, paintTint: 0, stop: 0, gravel: 0, car: 1 }
 
 export const FORMS = {
+  /** Where the talk starts: a track of loose gravel along the drop. No lines, no signs, no barrier, and lorries coming. */
+  gravel: { ...base, paint: 0, dash: 0, chevron: 0, coverage: 0, gravel: 1 },
   /** Title: the pass at sunset, barrier only on the sharpest bends. */
   road: base,
   /** Behind text-heavy sheets: the road dims and slows. */
-  dim: { ...base, coverage: .7, paint: .4, dash: .4, rail: .4, chevron: .4, land: .55, head: .4, speed: 3.5 },
+  dim: { ...base, coverage: .7, paint: .4, dash: .4, rail: .4, chevron: .4, land: .55, head: .4, speed: 3.5, car: .35 },
   /** Soft guardrails: paint and curve signs in blue, no barrier at all. */
   paint: { ...base, coverage: 0, head: .6, paintTint: 1 },
   /** Hard guardrails: the barrier covers every bend that matters; paint fades. */

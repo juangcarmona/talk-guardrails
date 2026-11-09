@@ -4,9 +4,9 @@ Scene by scene, restored from the first version of the deck: `presentations` com
 
 | PK | Scene | Act | Source | Form | Status |
 | --- | --- | --- | --- | --- | --- |
-| 01 | `title` | — | `slides.md` cover | `road` | designed |
-| 02 | `definition` | I · The road | `01-definition.md` | `road` | content |
-| 03 | `two-kinds` | I · The road | `02-soft-vs-hard.md` (cards + chips) | `road` → `paint` → `barrier` | content |
+| 01 | `title` | — | `slides.md` cover | `gravel` | designed |
+| 02 | `definition` | I · The road | `01-definition.md` | `gravel` | content |
+| 03 | `two-kinds` | I · The road | `02-soft-vs-hard.md` (cards + chips) | `gravel` → `paint` → `barrier` | content |
 | 04 | `soft-examples` | II · Paint | `03-soft-examples.md` | `paint` | content |
 | 05 | `soft-practice` | II · Paint | `04-soft-concrete.md` (Where / Rule + "None of them guarantees compliance") | `paint` | content |
 | 06 | `refuses` | III · Barrier | `05-hard-section.md`, reworded after the roundtable: "When the tool says no", "part of the execution", plus determinism vs non-determinism (feedback from colleagues) | `barrier` | content |
