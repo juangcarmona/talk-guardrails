@@ -70,6 +70,8 @@ function project(v: View, u: number, z: number, h: number) {
   return { x: VPX + (u - cam + bend) * k, y: HORIZON + (CAM_H - h - rise) * k, k }
 }
 
+/** How much the moon, behind us, lights the scene: nothing at sunset, a little at full night. */
+const moonOf = (dusk: number) => smooth((dusk - .45) / .45)
 const smooth = (x: number) => { const c = Math.min(1, Math.max(0, x)); return c * c * (3 - 2 * c) }
 /** How hard we pull away from the lorry, from its signed distance (negative once it has gone by). */
 function flinch(d: number) {
@@ -184,33 +186,50 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   ctx.fillStyle = g
   ctx.fillRect(0, 0, W, HORIZON + 4)
   const sunX = ax(.4)
-  const sun = ctx.createRadialGradient(sunX, HORIZON - 40, 0, sunX, HORIZON - 40, 620)
-  sun.addColorStop(0, blend(sky.sun, dusk))
-  sun.addColorStop(1, 'rgb(0 0 0 / 0)')
-  ctx.globalAlpha = .7 * (1 - dusk) * f.sky
-  ctx.fillStyle = sun
-  ctx.fillRect(0, 0, W, HORIZON + 4)
-  // The sun itself: a disc that sinks into the sea as the talk goes on, gone by nightfall.
+  // The sun: white-hot at the core, a gold bloom round it, a band of fire along the horizon.
+  // It sinks into the sea as the talk goes on and turns deep orange on the way; gone by nightfall.
   const sunR = 30
   const sunY = HORIZON - 70 + dusk * 150
   const sunUp = Math.max(0, 1 - dusk * 1.6) * f.sky
+  const low = Math.min(1, dusk * 1.6)
+  const glow = (x: number, y: number, r: number, sx: number, sy: number, stops: [number, string][], alpha: number) => {
+    ctx.save()
+    ctx.translate(x, y)
+    ctx.scale(sx, sy)
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r)
+    for (const [at, c] of stops) g.addColorStop(at, c)
+    ctx.globalAlpha = alpha
+    ctx.fillStyle = g
+    ctx.fillRect(-r, -r, 2 * r, 2 * r)
+    ctx.restore()
+  }
   if (sunUp > .01) {
     ctx.save()
     ctx.beginPath(); ctx.rect(-100, -100, W + 200, HORIZON + 103); ctx.clip()
-    const halo = ctx.createRadialGradient(sunX, sunY, sunR * .6, sunX, sunY, sunR * 5)
-    halo.addColorStop(0, `${blend(sky.disc, dusk * 1.5)}cc`)
-    halo.addColorStop(1, `${blend(sky.disc, dusk * 1.5)}00`)
-    ctx.globalAlpha = sunUp
-    ctx.fillStyle = halo
-    ctx.fillRect(sunX - sunR * 5, sunY - sunR * 5, sunR * 10, sunR * 10)
-    ctx.fillStyle = blend(sky.disc, dusk * 1.5)
-    ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2); ctx.fill()
+    // The sky warms all round it, then a wide flat band of light lies on the horizon.
+    glow(sunX, sunY, 760, 1, .8, [[0, tone('#ffb347', '#ff6a2a', low) + 'aa'], [.35, tone('#ff9a3c', '#e2502a', low) + '55'], [1, '#ff7a3a00']], sunUp)
+    glow(sunX, HORIZON, 200, 4.5, .55, [[0, tone('#ffd27a', '#ff7a3a', low) + 'cc'], [1, '#ff8a3a00']], sunUp)
+    ctx.globalCompositeOperation = 'lighter'
+    glow(sunX, sunY, sunR * 4, 1, 1, [[0, '#fff1c4cc'], [.3, tone('#ffd27a', '#ff8a3a', low) + '88'], [1, '#ffb34700']], sunUp)
+    glow(sunX, sunY, sunR, 1, 1, [[0, '#ffffff'], [.55, tone('#fff6d8', '#ffc27a', low)], [.85, tone('#ffe08a', '#ff8a3a', low)], [1, tone('#ffc35a', '#ff6a2a', low) + '00']], sunUp)
     ctx.restore()
   }
   const put = (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => {
     if (alpha <= .01 || x < -40 || x > W + 40 || y < -40 || y > H + 40) return
     ctx.globalAlpha = Math.min(1, alpha)
     ctx.drawImage(sprite(tint), 64 * GLYPHS.indexOf(glyph), 0, 64, 64, x - size / 2, y - size / 2, size, size)
+  }
+  // At night, the moon behind us lifts a faint blue haze off the horizon.
+  {
+    const m = moonOf(dusk) * f.sky
+    if (m > .01) {
+      const haze = ctx.createLinearGradient(0, HORIZON - 260, 0, HORIZON + 4)
+      haze.addColorStop(0, '#2a3654' + '00')
+      haze.addColorStop(1, '#2a3654')
+      ctx.globalAlpha = .55 * m
+      ctx.fillStyle = haze
+      ctx.fillRect(0, HORIZON - 260, W, 264)
+    }
   }
   for (const star of STARS) put(color.star, star.g, ax(star.a), 30 + star.y * (HORIZON - 120), 9 + star.j * 7, (dusk - .15) * 1.3 * f.sky * (.4 + .6 * Math.abs(Math.sin(t * .7 + star.j * 50))))
 
@@ -226,6 +245,8 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     for (let x = 0; x <= W; x += 14) {
       const a = Math.atan((x - VPX) / FOCAL) + yaw
       put(layer ? color.rock : color.amber, '.', x, HORIZON + 4 - ridge(a, layer) * landward(a), 12, (layer ? .5 : .55 * (1 - dusk)) * f.land * hash(Math.round(a * 400)) * landward(a))
+      // Moonlight catching the ridge lines.
+      put(color.star, '.', x, HORIZON + 5 - ridge(a, layer) * landward(a), 10, .4 * moonOf(dusk) * f.land * hash(Math.round(a * 400) + 7) * landward(a))
     }
   }
   // The sea: bright with the sky at the horizon, deep below; the sun's road of glints on it.
@@ -236,35 +257,37 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   ctx.globalAlpha = 1
   ctx.fillStyle = sea
   ctx.fillRect(0, HORIZON + 3, W, H - HORIZON)
-  // The sun's road: a narrow column of light on the water straight below the disc, widening a little towards us.
+  // The sun's road: a column of gold straight below the disc, about as wide as the sun, broken into
+  // glittering streaks; a bright seam where it meets the horizon. Added on top, as light is.
+  const moon = moonOf(dusk)
   if (sunUp > .01) {
     ctx.save()
-    ctx.translate(sunX, HORIZON + 3)
-    ctx.scale(.16, 1)
-    const column = ctx.createRadialGradient(0, 0, 0, 0, 0, H - HORIZON)
-    column.addColorStop(0, `${blend(sky.disc, dusk * 1.5)}b0`)
-    column.addColorStop(.5, `${blend(sky.sun, dusk)}40`)
-    column.addColorStop(1, `${blend(sky.sun, dusk)}00`)
-    ctx.globalAlpha = sunUp
-    ctx.fillStyle = column
-    ctx.fillRect(-(H - HORIZON), 0, 2 * (H - HORIZON), H - HORIZON)
+    ctx.beginPath(); ctx.rect(-100, HORIZON + 2, W + 200, H); ctx.clip()
+    ctx.globalCompositeOperation = 'lighter'
+    glow(sunX, HORIZON + 3, 160, 3.2, .06, [[0, '#fff1c4dd'], [1, '#ffd27a00']], sunUp)
+    glow(sunX, HORIZON + 3, H - HORIZON, .07, 1, [[0, tone('#ffd27a', '#ff8a3a', low) + '99'], [.45, tone('#ffb347', '#ff6a2a', low) + '44'], [1, '#ff8a3a00']], sunUp)
     ctx.restore()
+    ctx.globalCompositeOperation = 'lighter'
   }
   for (const g of GLINTS) {
     const y = HORIZON + 6 + g.y * (H - HORIZON)
-    // Most glints near the middle of the column, a few straying wider.
     const across = (g.x - .5) * 2
-    const x = sunX + Math.sign(across) * across * across * (sunR * 1.6 + g.y * 220)
-    const path = 1 - Math.abs(across) * .7
-    const w = 8 + g.y * 26 + (1 - Math.abs(across)) * 10
-    put(g.j < .55 ? color.paint : color.amber, g.j < .5 ? '-' : '=', x, y, w, sunUp * .95 * path * (.25 + .75 * Math.abs(Math.sin(t * 1.7 + g.j * 40))))
-    put(color.star, '-', W * g.x, y, 5 + g.y * 14, dusk * .25 * f.sky * Math.abs(Math.sin(t * .9 + g.j * 30)))
+    const x = sunX + across * (sunR * 1.2 + g.y * 140) * (Math.abs(across) < .7 ? 1 : 1.8)
+    const path = 1 - Math.abs(across) * .75
+    const w = 8 + g.y * 30 + (1 - Math.abs(across)) * 12
+    put(g.j < .35 ? '#fff1c4' : g.j < .8 ? color.amber : '#ff8a3a', g.j < .5 ? '-' : '=', x, y, w, sunUp * path * (.2 + .8 * Math.abs(Math.sin(t * 1.9 + g.j * 40))))
+  }
+  ctx.globalCompositeOperation = 'source-over'
+  // At night the moon is behind us: a faint silver sparkle all across the water.
+  for (const g of GLINTS) {
+    const y = HORIZON + 6 + g.y * (H - HORIZON)
+    put(color.star, '-', W * g.x, y, 5 + g.y * 14, (dusk * .2 + moon * .35) * f.sky * Math.abs(Math.sin(t * .9 + g.j * 30)))
   }
   // Boats' lights far out come on as it gets dark.
   for (const boat of BOATS) put(boat.j < .7 ? color.amber : color.paint, '.', ax(boat.a), HORIZON + boat.y, 10, (dusk - .25) * 1.2 * f.land * (.6 + .4 * Math.sin(t * 1.1 + boat.j * 30)))
 
   // Light on the road: daylight fades, headlights reach the nearest twenty-odd metres.
-  const lit = (z: number) => (1 - .7 * dusk) + dusk * 1.4 * Math.exp(-z / 24)
+  const lit = (z: number) => (1 - .7 * dusk) + .3 * moon + dusk * 1.4 * Math.exp(-z / 24)
   const fogOf = (z: number) => Math.min(1, Math.max(0, 1.15 - z / LENGTH)) * Math.min(1, (z - Z_MIN) / 1.2)
 
   // Chevrons on the outside of the sharpest bends, every 7 m.
@@ -303,7 +326,7 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   const wallBase = blend(sky.wall, dusk)
   const roadBase = blend(sky.road, dusk)
   const haze = blend(sky.ridgeFar, dusk)
-  const shade = (base: string, z: number) => tone(tone(base, haze, smooth((z / LENGTH - .55) / .45)), blend(sky.ground, 1), (1 - f.land) * .5)
+  const shade = (base: string, z: number) => tone(tone(tone(base, '#3b4458', .28 * moon), haze, smooth((z / LENGTH - .55) / .45)), blend(sky.ground, 1), (1 - f.land) * .5)
   const solid = (a: Edge, b: Edge, c: Edge, d: Edge, fill: string) => {
     ctx.globalAlpha = 1
     ctx.fillStyle = fill
@@ -386,6 +409,12 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     // The lip of the ravine, a crisp broken edge.
     const lip = project(v, ROAD.rail + LIP, z, 0)
     put(color.rock, hash(i * 3) < .5 ? '.' : '-', lip.x, lip.y, Math.min(26, Math.max(4, (FOCAL / z) * .12)), fogOf(z) * .7 * lit(z) * f.land)
+    // Moonlight silvers the edges facing us: the top of the cut and the lip of the drop.
+    if (moon > .02) {
+      const top = project(v, left - WALL_BACK, z, WALL_H)
+      put(color.star, hash(i * 5) < .5 ? '.' : '-', top.x, top.y, Math.min(22, Math.max(4, (FOCAL / z) * .1)), fogOf(z) * .55 * moon * f.land)
+      put(color.star, '.', lip.x, lip.y - 1, Math.min(20, Math.max(4, (FOCAL / z) * .09)), fogOf(z) * .45 * moon * f.land)
+    }
     // Fallen rock along the narrowing.
     const fall = pinch(s)
     if (fall > .25 && hash(i * 5) < fall * .8) {

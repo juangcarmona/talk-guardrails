@@ -19,6 +19,7 @@ Scene by scene, restored from the first version of the deck: `presentations` com
 | 13 | `agent-console` | III · Barrier | `12-console-agent.md` (with compliant shapes) | `dim` | content |
 | 14 | `philosophy` | III · Barrier | `13-hard-philosophy.md` | `barrier` | content |
 | 15 | `takeaway` | IV · Black spot | `14-takeaway.md` | `barrier` → `steel` | content |
+| 16 | `contact` | — | new, after Aligned's closing sheet | `parked` | QR (`mailto:`) and the author's email |
 
 The closing "What's our next soft → hard candidate?" scene from the concept deck was dropped: the original ends on the takeaway.
 

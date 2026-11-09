@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { At, Plate, Term } from './components'
+import { QrCode } from './QrCode'
 import type { T } from './i18n'
 import type { FormName } from './road/forms'
 
@@ -253,4 +254,15 @@ export const scenes: Scene[] = [
       <At at={1}><p className="lead muted">{t('And when agents execute the work, guard the verdicts as well as the code.', 'Y cuando son los agentes quienes ejecutan el trabajo, protege los veredictos además del código.')}</p></At>
     </div>,
   },
+  {
+    id: 'contact', act: 0, title: ['Write to me', 'Escríbeme'], steps: 0, layout: 'center', form: () => 'parked',
+    content: t => <div className="closing">
+      <p className="eyebrow">{t('Questions, war stories, your next soft → hard candidate', 'Dudas, batallitas, tu próximo candidato blando → duro')}</p>
+      <QrCode value={`mailto:${EMAIL}`} />
+      <a className="email" href={`mailto:${EMAIL}`}>{EMAIL}</a>
+      <p className="links">Juan G. Carmona · Plain Concepts</p>
+    </div>,
+  },
 ]
+
+const EMAIL = 'juan.garciacarmona@plainconcepts.com'

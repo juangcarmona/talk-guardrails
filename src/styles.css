@@ -214,3 +214,12 @@ blockquote { margin: 0; font-size: 50px; line-height: 1.2; font-weight: 650; bor
 .surfaces.compact .surface b { font-size: 28px; }
 .surfaces.compact .surface span { font-size: 19px; line-height: 1.35; }
 .callout.bottom { margin-top: auto; }
+
+/* Closing: write to me */
+.closing { display: grid; justify-items: center; gap: 30px; margin-top: -20px; text-align: center; }
+.closing .eyebrow { margin: 0; font: 600 24px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--amber, #ffb21c); }
+.qr { width: 340px; height: 340px; border-radius: 6px; box-shadow: 0 0 0 10px rgb(255 255 255 / 6%), 0 20px 80px rgb(0 0 0 / 60%); }
+.closing .email { margin-top: 20px; font: 700 64px var(--mono); letter-spacing: -.02em; color: var(--ink, #f2f4f7); text-decoration: none; text-shadow: 0 2px 24px rgb(0 0 0 / 70%); }
+.closing .links { margin: 0; font: 26px var(--mono); color: var(--muted); }
+.closing { position: relative; isolation: isolate; }
+.closing::before { content: ''; position: absolute; inset: -80px -260px; z-index: -1; background: radial-gradient(closest-side, rgb(8 9 11 / 80%), rgb(8 9 11 / 50%) 60%, transparent); }
