@@ -12,8 +12,9 @@ Seen from the driver's seat. We drive on the right, as in Spain: the rock wall o
 | Curve chevrons (*paneles direccionales*) on the outside of the sharp bends | Blue panel, white `<` `>`, retroreflective glow at night | Soft guardrails too: a warning, however bright, does not hold the car |
 | W-beam barrier between the road and the ravine | `#` `=` `@` in red and white 2 m panels, `|` posts, amber reflector `*` | Hard guardrails: they stop you |
 | Rock wall and scree | A solid, opaque face (taller, 10 m), hazing towards the far ridge with distance; shrubs on top and at its foot | The mountain: what is at stake if you leave the road |
-| The close pass (three outcomes) | With nothing at the edge the lorry takes the middle and we go over on a bend: the car tips off the lip, GAME OVER, CONTINUE? 3-2-1, and we start again. With paint the lorry keeps its side and we usually hold the lip, but now and then a bend puts us over. With hard protection we tuck in short of it; only on a close one (sharp bend or bad luck, about one pass in three) do we hit it and get thrown back in: rock chips off boulders, splinters off timber, sparks off steel | Nothing, soft, hard: the same scare, three endings |
-| Our car, just ahead of the camera | A red open roadster seen from behind, two heads over the windscreen, solid cells with a glyph in each; leans out of the bends, brake lights at the stop | Us, driving the change: the protagonist of the talk |
+| The close pass (three outcomes) | With nothing at the edge the lorry takes the middle and we go over on a bend: the car tips off the lip, GAME OVER, CONTINUE? 3-2-1, and we start again. With paint the lorry keeps its side and we usually hold the lip, but now and then a bend puts us over. With hard protection we tuck in short of it; only on a close one (sharp bend or bad luck, about one pass in three) do we hit it and get thrown back in: concrete chips off the kerb, splinters off timber, sparks off steel | Nothing, soft, hard: the same scare, three endings |
+| Our car, just ahead of the camera | A red 911 Carrera S (992) from behind, drawn with shapes: hips swelling over the rear wheels, fastback roof and big rear window with the two of us, louvred engine grille with the vertical third brake light, thin light bar across the tail, black diffuser with two oval tailpipes. No badges | Us, driving the change |
+| Dials, bottom right | Speedometer to 320 km/h and a rev counter to 8000 rpm with the redline, the gear and the digital speed | The pace of the drive | Us, driving the change: the protagonist of the talk |
 | Tail lights ahead, headlights oncoming | `*` `@` red and amber | Changes moving through the system (later: the agent) |
 | Ridges, sun glow, stars, village lights in the valley | Silhouettes, `.` `+` `*` | The light, never content |
 
@@ -30,9 +31,9 @@ Each form says how much of the road the barrier covers, measured by how sharp th
 | `gravel` | None, and no paint or signs: an unmade track of loose stone, lorries coming | Title, definition, first step of two kinds |
 | `road` | Only the sharpest bends | (spare) |
 | `paint` | None; paint and chevrons in blue | Soft act |
-| `stones` | Hard level 1: whitewashed boulders on the bends | Surfaces 1 · Build, build sheets (`dimStones`) |
-| `logs` | Hard level 2: timber fence, the mountain kind | Surfaces 2 · Commit, commit sheet (`dimLogs`) |
-| `barrier` | Hard level 3: steel W-beam on every bend that matters | Surfaces 3 · CI, refuses, philosophy |
+| `stones` | Hard level 1: a raised concrete kerb along the bends | Surfaces 1 · Commit, commit sheet (`dimStones`) |
+| `logs` | Hard level 2: timber fence, the mountain kind | Surfaces 2 · CI, CI sheets (`dimLogs`) |
+| `barrier` | Hard level 3: steel W-beam on every bend that matters | Surfaces 3 · Build, build sheets, refuses, philosophy |
 | `stop` | Hard level 4: the officer stops us | Surfaces 4 · Agent, agent harness |
 | `steel` | The whole ravine | The black spot, after: paint became steel |
 | `dim` | As `road`, dimmed and slower | Text-heavy sheets |
@@ -71,3 +72,31 @@ From Spanish road signs, so it reads without a legend.
 - **The flinch**: when a lorry bears down it drifts over the centre line, we pull right with our wheels over the edge line, lean towards the drop, shudder, and gravel flies. Lorries only appear where nothing would stop us (the opening and the soft scenes, low `coverage`); once the hard barrier is up there are no lorries at all.
 - **Narrowings**: every 170 m a rockfall takes two metres of the oncoming lane. P-17a warning triangle forty metres before, solid centre line, fallen rock at the foot of the cut.
 - **The stop** (`surfaces`, step 4, form `stop`): a traffic officer in a reflective vest steps into our lane with a STOP paddle, the patrol car flashes blue on the shoulder, traffic clears, and we halt. Stage 4: the harness can stop the agent.
+
+## The lorry script
+
+Lorries no longer come round on a loop. Each sheet lists its own in `src/scenes.tsx` (`traffic`): when the lorry appears, in seconds after the sheet opens, and how the pass ends. `crash` waits for a left-hand bend, where we are on the outside; steel never lets us over.
+
+| Sheet | Lorries |
+| --- | --- |
+| `title` | 15 s a scare we survive; 50 s over the edge |
+| `definition` | 4 s over the edge (it waits for the bend) |
+| `soft-examples` | 12 s a scare; 45 s over the edge |
+| `soft-code` | 14 s over the edge, right after "everything green" |
+| `refuses` | 4 s into the barrier: sparks, back in |
+| `surfaces` | 10 s a scare; 32 s into the protection |
+| `philosophy` | 10 s into the barrier |
+| `takeaway` | 8 s a scare |
+| everything else | none |
+
+## The track
+
+`src/road/track.ts` lays the road out once from a seed, as a 3.6 km loop: long straights, single bends, S-bends and runs of tight curves (each announced by a P-14 warning triangle), and climbs and descents of 4 to 8.5 %. The car is driven with a simple model: it pulls up to 200 km/h and beyond on the long straights, brakes at 8.5 m/s² so it reaches each bend at that bend's speed (about 60 km/h in the tightest), accelerates out, loses pull on climbs and changes gear through a seven-speed box. One metre of the road on screen stands for 2.5 m of driving. Text-heavy sheets cap the top speed; the stop brings it to zero.
+
+## Opening, stop and closing (one continuous shot)
+
+- **Opening** (`title`, form `start`): the car parked on a straight stretch of the gravel track, from behind, the sun over the sea. Nothing moves and INSERT COIN · PRESS M blinks top right until the first M; then the engine catches with a puff from the tailpipes and we pull away.
+- **The car is a flat picture**: a static drawing of the 992 Carrera S from behind, the same size and place on the screen all the way. It does not turn with the road or bob; it only shudders when it hits a barrier and tips when it goes over. Its paint keeps its colour after dark. The car brakes before each bend, down to the speed of its tightest point by the time the bend begins.
+- **The police** (`stop`): when the stage-4 sheet comes up, a lay-by opens on the sea side at the far end of the visible road, with the patrol car in it and the officer at its mouth holding up STOP. We brake to rest a few metres short of him. It happens twice: the four surfaces sheet and the agent harness sheet.
+- **Closing** (`contact`, form `mirador`): we look for the next straight, a P sign and a lay-by over the bay at its end; the car pulls across into it and stops, and the camera turns right, away from the parked car, out over the bay: the full moon over the water, the QR and email on the left.
+- **M**, in either window: the first press starts the game (the coin); after that it freezes the drive (a small PAUSE · M mark shows above the dials) and starts it again.

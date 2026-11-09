@@ -22,6 +22,7 @@ export function Presenter() {
   const t = translator(lang)
   const extra = useCallback((action: string) => {
     if (action === 'blackout') setBlackout(on => { channel?.postMessage({ type: 'blackout', on: !on } satisfies Message); return !on })
+    if (action === 'pause') channel?.postMessage({ type: 'pause' } satisfies Message)
   }, [])
   useKeys(go, ref, extra)
 
@@ -53,6 +54,6 @@ export function Presenter() {
     <section className="p-notes">
       {segments.map((text, k) => <p key={k} className={k === position.step ? 'now' : k < position.step ? 'done' : ''}>{text}</p>)}
     </section>
-    <footer>→ / PageDown next · ← / PageUp back · B blackout · keys work in either window</footer>
+    <footer>→ / PageDown next · ← / PageUp back · B blackout · M start, then pause the road · keys work in either window</footer>
   </main>
 }

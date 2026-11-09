@@ -27,10 +27,10 @@ export function same(a: Position, b: Position) {
 }
 
 // Audience and presenter windows stay in step through one channel.
-export type Message = { type: 'goto'; position: Position } | { type: 'hello' } | { type: 'blackout'; on: boolean } | { type: 'lang'; lang: 'en' | 'es' }
+export type Message = { type: 'goto'; position: Position } | { type: 'hello' } | { type: 'blackout'; on: boolean } | { type: 'lang'; lang: 'en' | 'es' } | { type: 'pause' }
 export const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('guardrails-deck')
 
-export function keyAction(event: KeyboardEvent): 'next' | 'previous' | 'first' | 'last' | 'presenter' | 'blackout' | 'fullscreen' | null {
+export function keyAction(event: KeyboardEvent): 'next' | 'previous' | 'first' | 'last' | 'presenter' | 'blackout' | 'fullscreen' | 'pause' | null {
   if (event.metaKey || event.ctrlKey || event.altKey) return null
   switch (event.key) {
     case 'ArrowRight': case 'ArrowDown': case 'PageDown': case ' ': case 'Enter': case 'n': return 'next'
@@ -40,6 +40,8 @@ export function keyAction(event: KeyboardEvent): 'next' | 'previous' | 'first' |
     case 'p': case 'P': return 'presenter'
     case 'b': case 'B': case '.': return 'blackout'
     case 'f': case 'F': return 'fullscreen'
+    // Freeze the drive behind the sheet, for anyone the motion bothers; again to carry on.
+    case 'm': case 'M': return 'pause'
     default: return null
   }
 }

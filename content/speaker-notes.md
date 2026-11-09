@@ -14,11 +14,19 @@ One `## scene-id` section per scene; `[click]` separates what is said at each st
 
 (pending)
 
+## determinism
+
+(pending)
+
 ## soft-examples
 
 (pending)
 
 ## soft-practice
+
+(pending)
+
+## soft-code
 
 (pending)
 
@@ -47,6 +55,10 @@ One `## scene-id` section per scene; `[click]` separates what is said at each st
 (pending)
 
 ## agent
+
+(pending)
+
+## agent-hook
 
 (pending)
 

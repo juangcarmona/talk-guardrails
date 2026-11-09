@@ -5,7 +5,8 @@
 // Each scene names a form and a light; the field eases from one to the next.
 
 import { blend, color, mix as tone, rng, sky } from './palette'
-import { FORMS, type Form, type FormName } from './forms'
+import { FORMS, type Cue, type Form, type FormName } from './forms'
+import { C_MAX, LOOP, S_BENDS, curvature, grade, heading } from './track'
 
 const GLYPHS = ['.', ':', '-', '=', '+', 'x', '*', '#', '@', '|', '^', '>', '<', '%', '&'] as const
 type Glyph = (typeof GLYPHS)[number]
@@ -20,7 +21,14 @@ const Z_MIN = 2
 const LENGTH = 90
 const ROW = 0.011
 const EASE_MS = 1400
-const TURN_MS = 3200
+/** The road on screen is a model of the real one: 1 m of it stands for this many metres of driving. */
+const WORLD = .4
+const TOP_KMH = 290
+/** Braking, in m/s², and the speed each gear tops out at, in km/h. */
+const BRAKE = 8.5
+/** The braking we plan for, kept below what the car can do so there is always some left. */
+const PLAN = 6.5
+const GEAR_TOP = [68, 108, 148, 188, 228, 268, 310]
 
 // Lateral positions across the road, in metres from the camera. We drive on the
 // right, as in Spain: the mountain wall on the left, the ravine on our right.
@@ -29,13 +37,7 @@ export const ROAD = { leftEdge: -4.8, centre: -1.3, rightEdge: 2.15, rail: 2.4 }
 /** The lip of the drop, just past the barrier posts. */
 const LIP = .25
 
-// The road's line on the map (X) and its rise (Y), in metres along the road.
-const X = (s: number) => 18 * Math.sin(s / 40) + 7 * Math.sin(s / 17 + 1.3)
-const dX = (s: number) => (18 / 40) * Math.cos(s / 40) + (7 / 17) * Math.cos(s / 17 + 1.3)
-const curvature = (s: number) => -(18 / 1600) * Math.sin(s / 40) - (7 / 289) * Math.sin(s / 17 + 1.3)
-const C_MAX = 18 / 1600 + 7 / 289
-const Y = (s: number) => 2.2 * Math.sin(s / 55) + .8 * Math.sin(s / 21)
-const dY = (s: number) => (2.2 / 55) * Math.cos(s / 55) + (.8 / 21) * Math.cos(s / 21)
+// The road's line and rise come from the track tables (src/road/track.ts).
 /** 0 on the sharpest bends, 1 on the straights: where a barrier is needed first. */
 const calm = (s: number) => 1 - Math.abs(curvature(s)) / C_MAX
 
@@ -51,10 +53,29 @@ function pinch(s: number) {
 const leftEdge = (s: number) => ROAD.leftEdge + PINCH_WIDTH * pinch(s)
 const centre = (s: number) => (leftEdge(s) + ROAD.rightEdge) / 2
 
-type View = { s0: number; heading: number; slope: number; x0: number; y0: number }
+type View = { s0: number; heading: number; slope: number; bend: Float32Array; rise: Float32Array }
 
+/** The road ahead from `s0`: how far it drifts across and rises, relative to where we point, every half metre. */
+const VIEW_DZ = .5
 function view(s0: number): View {
-  return { s0, heading: dX(s0), slope: dY(s0), x0: X(s0), y0: Y(s0) }
+  const n = Math.ceil((LENGTH + 40) / VIEW_DZ)
+  const bend = new Float32Array(n + 1), rise = new Float32Array(n + 1)
+  const h0 = heading(s0), g0 = grade(s0)
+  let ph = 0, pg = 0
+  for (let j = 1; j <= n; j++) {
+    const s = s0 + j * VIEW_DZ
+    const dh = heading(s) - h0, dg = grade(s) - g0
+    bend[j] = bend[j - 1] + (ph + dh) / 2 * VIEW_DZ
+    rise[j] = rise[j - 1] + (pg + dg) / 2 * VIEW_DZ
+    ph = dh; pg = dg
+  }
+  return { s0, heading: h0, slope: g0, bend, rise }
+}
+function along(a: Float32Array, z: number) {
+  const x = Math.max(0, z / VIEW_DZ)
+  const i = Math.floor(x)
+  if (i >= a.length - 1) return a[a.length - 1] + (a[a.length - 1] - a[a.length - 2]) * (x - a.length + 1)
+  return a[i] + (a[i + 1] - a[i]) * (x - i)
 }
 
 // When the lorry comes through, we flinch: 0 normally, 1 with our wheels on the edge of the drop.
@@ -65,14 +86,30 @@ let drift = 0
 let extreme = false
 const SWERVE_U = 2.25
 
-/** A point `z` metres ahead, `u` across, `h` up, to sheet pixels, following the bends. */
-function project(v: View, u: number, z: number, h: number) {
+/** Where the road camera sits across the road and how far it has turned (small angles): for the lay-by. */
+let camU = 0
+let camYaw = 0
+/** A free camera for the opening and closing shots: position on the road's own axes and heading (radians, 0 down the road, π/2 out to sea). */
+export type Cine = { x: number; y: number; z: number; yaw: number }
+let cine: Cine | null = null
+
+/** A point on the road's own axes (`x` across including the bends, `z` ahead, `h` up) to sheet pixels. */
+function toScreen(v: View, x: number, z: number, h: number) {
+  if (cine) {
+    const dx = x - cine.x, dz = z - cine.z, sn = Math.sin(cine.yaw), cs = Math.cos(cine.yaw)
+    const d = dx * sn + dz * cs
+    const k = FOCAL / Math.max(d, .05)
+    return { x: VPX + (dx * cs - dz * sn) * k, y: HORIZON - (h + along(v.rise, z) - cine.y) * k, k, d }
+  }
   const k = FOCAL / z
-  const bend = X(v.s0 + z) - v.x0 - v.heading * z
-  const rise = Y(v.s0 + z) - v.y0 - v.slope * z
   // Pulling right also points the nose a little towards the edge, more so far ahead.
   const cam = SWERVE_U * swerve * Math.min(1, 6 / z + .35)
-  return { x: VPX + (u - cam + bend) * k, y: HORIZON + (CAM_H - h - rise) * k, k }
+  return { x: VPX + (x - cam - camU - camYaw * z) * k, y: HORIZON + (CAM_H - h - along(v.rise, z)) * k, k, d: z }
+}
+
+/** A point `z` metres ahead, `u` across, `h` up, to sheet pixels, following the bends. */
+function project(v: View, u: number, z: number, h: number) {
+  return toScreen(v, u + along(v.bend, z), z, h)
 }
 
 /** How much the moon, behind us, lights the scene: nothing at sunset, a little at full night. */
@@ -163,43 +200,16 @@ function ridge(a: number, layer: number) {
   return (layer ? 150 : 250) * (.3 + .32 * peaks ** 2 + .2 * Math.sin(a * 2.3 + 2 * o) + .1 * Math.sin(a * 9.7 + o) + .05 * Math.abs(Math.sin(a * 27)) + .03 * Math.sin(a * 61))
 }
 
-/** Draw one frame: `travel` metres along the road, `t` seconds of clock (for twinkle). */
-export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: number, hero: Hero = HERO_IDLE) {
-  const ctx = canvas.getContext('2d')!
-  const scale = canvas.width / W
-  const show = Math.min(1, Math.max(0, (f.head - .1) * 3))
-  // We only flinch towards the edge where nothing would stop us: paint, or no barrier at all.
-  // Without even paint, the lorry takes its half out of the middle; with lines it keeps to its side.
-  drift = regimeOf(f) === 'none' ? .7 : -.35
-  swerve = 0
-  extreme = false
-  TRAFFIC.forEach((truck, k) => {
-    if (truck.kind !== 'truck') return
-    const gap = (((truck.s0 - travel * 1.9) % truck.period) + truck.period) % truck.period
-    const near = flinch(gap < truck.period / 2 ? gap : gap - truck.period)
-    if (near <= swerve) return
-    swerve = near
-    // Only some passes are close enough to put us into the protection: a sharp bend, or bad luck.
-    const lap = Math.floor((travel * 1.9 - truck.s0 + truck.period / 2) / truck.period)
-    extreme = Math.abs(curvature(travel + HERO_Z)) / C_MAX > .75 || hash(lap * 31 + k * 7) < .3
-  })
-  swerve *= show * Math.min(1, f.speed / 3)
-  // Lean towards the drop and shudder on the rumble of the edge; zoom a touch so the corners stay covered.
-  const amp = (2 + 7 * swerve) * swerve
-  ctx.setTransform(scale, 0, 0, scale, 0, 0)
-  // At the viewpoint we turn right: the road slides off to the left as the bay comes in.
-  const turn = smooth(f.bay)
-  if (turn > .999) { drawBay(ctx, t, 0); return 0 }
-  ctx.translate(-turn * W, 0)
-  ctx.translate(W / 2 + Math.sin(t * 53) * amp, H / 2 + Math.sin(t * 71) * amp * .7)
-  ctx.rotate(.05 * swerve)
-  ctx.scale(1 + .08 * swerve, 1 + .08 * swerve)
-  ctx.translate(-W / 2, -H / 2)
-  const v = view(travel)
-  const dusk = Math.min(1, Math.max(0, f.dusk))
-  const yaw = Math.atan(v.heading)
-  const ax = (a: number) => VPX + Math.tan(Math.max(-1.3, Math.min(1.3, a - yaw))) * FOCAL
+/** Draw a glyph from the atlas, centred, if it is on the sheet at all. */
+const putter = (ctx: CanvasRenderingContext2D) => (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => {
+  if (alpha <= .01 || x < -40 || x > W + 40 || y < -40 || y > H + 40) return
+  ctx.globalAlpha = Math.min(1, alpha)
+  ctx.drawImage(sprite(tint), 64 * GLYPHS.indexOf(glyph), 0, 64, 64, x - size / 2, y - size / 2, size, size)
+}
 
+/** Everything far away: sky, sun, stars, the ridges inland, the sea and its glints, boats. `yaw` is where we look, on the map. */
+function drawSky(ctx: CanvasRenderingContext2D, f: Light, dusk: number, yaw: number, t: number) {
+  const ax = (a: number) => VPX + Math.tan(Math.max(-1.3, Math.min(1.3, a - yaw))) * FOCAL
   // Sky: sunset gradient to night, the sun's glow behind the ridges, stars as the light goes.
   const g = ctx.createLinearGradient(0, 0, 0, HORIZON)
   g.addColorStop(0, blend(sky.top, dusk))
@@ -237,11 +247,7 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     glow(sunX, sunY, sunR, 1, 1, [[0, '#ffffff'], [.55, tone('#fff6d8', '#ffc27a', low)], [.85, tone('#ffe08a', '#ff8a3a', low)], [1, tone('#ffc35a', '#ff6a2a', low) + '00']], sunUp)
     ctx.restore()
   }
-  const put = (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => {
-    if (alpha <= .01 || x < -40 || x > W + 40 || y < -40 || y > H + 40) return
-    ctx.globalAlpha = Math.min(1, alpha)
-    ctx.drawImage(sprite(tint), 64 * GLYPHS.indexOf(glyph), 0, 64, 64, x - size / 2, y - size / 2, size, size)
-  }
+  const put = putter(ctx)
   // At night, the moon behind us lifts a faint blue haze off the horizon.
   {
     const m = moonOf(dusk) * f.sky
@@ -308,31 +314,84 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   }
   // Boats' lights far out come on as it gets dark.
   for (const boat of BOATS) put(boat.j < .7 ? color.amber : color.paint, '.', ax(boat.a), HORIZON + boat.y, 10, (dusk - .25) * 1.2 * f.land * (.6 + .4 * Math.sin(t * 1.1 + boat.j * 30)))
+}
+
+/** Draw one frame: `travel` metres along the road, `t` seconds of clock (for twinkle). */
+export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: number, hero: Hero = HERO_IDLE) {
+  const ctx = canvas.getContext('2d')!
+  const scale = canvas.width / W
+  const show = Math.min(1, Math.max(0, (f.head - .1) * 3))
+  // We only flinch towards the edge where nothing would stop us: paint, or no barrier at all.
+  // Without even paint, the lorry takes its half out of the middle; with lines it keeps to its side.
+  drift = regimeOf(f) === 'none' ? .7 : -.35
+  // The lorry, if the script has one on the road: we pull away as it comes by.
+  swerve = hero.lorry ? flinch(hero.lorry.z - Z_MIN) * show * Math.min(1, f.speed / 3) : 0
+  extreme = hero.lorry?.outcome === 'scrape'
+  if (hero.lorry?.outcome === 'crash') drift = .7
+  // Lean towards the drop and shudder on the rumble of the edge; zoom a touch so the corners stay covered.
+  const amp = (2 + 7 * swerve) * swerve
+  ctx.setTransform(scale, 0, 0, scale, 0, 0)
+  cine = hero.cine ?? null
+  camU = cine ? 0 : hero.cam?.u ?? 0
+  camYaw = cine ? 0 : hero.cam?.yaw ?? 0
+  if (cine) swerve = 0
+  ctx.translate(W / 2 + Math.sin(t * 53) * amp, H / 2 + Math.sin(t * 71) * amp * .7)
+  ctx.rotate(.05 * swerve)
+  ctx.scale(1 + .08 * swerve, 1 + .08 * swerve)
+  ctx.translate(-W / 2, -H / 2)
+  const v = view(travel)
+  const dusk = Math.min(1, Math.max(0, f.dusk))
+  const yaw = Math.atan(v.heading) + (cine ? cine.yaw : camYaw)
+
+  drawSky(ctx, f, dusk, yaw, t)
+  if (hero.bay) drawBayPanorama(ctx, t, (Math.PI / 2 - (cine?.yaw ?? 0)) * FOCAL, hero.bay)
+  const put = putter(ctx)
+  const moon = moonOf(dusk)
 
   // Light on the road: daylight fades, headlights reach the nearest twenty-odd metres.
-  const lit = (z: number) => (1 - .7 * dusk) + .3 * moon + dusk * 1.4 * Math.exp(-z / 24)
-  const fogOf = (z: number) => Math.min(1, Math.max(0, 1.15 - z / LENGTH)) * Math.min(1, (z - Z_MIN) / 1.2)
+  const lit = (z: number) => (1 - .7 * dusk) + .3 * moon + dusk * 1.4 * Math.exp(-Math.abs(z - (cine?.z ?? 0)) / 24)
+  const fogOf = (z: number) => cine
+    ? Math.min(1, Math.max(0, 1.15 - Math.abs(z - cine.z) / LENGTH))
+    : Math.min(1, Math.max(0, 1.15 - z / LENGTH)) * Math.min(1, (z - Z_MIN) / 1.2)
 
   // Chevrons on the outside of the sharpest bends, every 7 m.
-  const signs: { z: number; s: number; warn?: boolean }[] = []
-  for (let k = Math.ceil((travel + Z_MIN) / 7); k * 7 < travel + LENGTH; k++) if (Math.abs(curvature(k * 7)) > .62 * C_MAX) signs.push({ z: k * 7 - travel, s: k * 7 })
+  const signs: { z: number; s: number; warn?: boolean; sbend?: boolean; right?: boolean }[] = []
+  for (let k = Math.ceil((travel + Z_MIN) / 7); k * 7 < travel + LENGTH; k++) if (Math.abs(curvature(k * 7)) > .5 * C_MAX) signs.push({ z: k * 7 - travel, s: k * 7 })
+  // A warning triangle before every S and run of curves.
+  for (const b of S_BENDS) for (let lap = Math.floor((travel - b.s) / LOOP); b.s + lap * LOOP < travel + LENGTH; lap++) {
+    const s = b.s + lap * LOOP
+    if (s - travel > Z_MIN) signs.push({ z: s - travel, s, sbend: true, right: b.right })
+  }
 
   // Land, from far to near.
   const land: { z: number; p: Particle }[] = []
-  for (const p of PARTICLES) land.push({ z: Z_MIN + (((p.s - travel) % LENGTH) + LENGTH) % LENGTH, p })
+  for (const p of PARTICLES) {
+    const z = Z_MIN + (((p.s - travel) % LENGTH) + LENGTH) % LENGTH
+    land.push({ z, p })
+    if (cine && z - LENGTH > -BEHIND) land.push({ z: z - LENGTH, p })
+  }
   land.sort((a, b) => b.z - a.z)
 
   // Oncoming traffic, far to near, and a shudder when the lorry goes by close.
-  const traffic = TRAFFIC.map(car => ({ car, z: Z_MIN + (((car.s0 - travel * 1.9) % car.period) + car.period) % car.period })).filter(c => c.z < LENGTH).sort((a, b) => b.z - a.z)
+  const traffic = TRAFFIC.map(car => ({ car, z: Z_MIN + (((car.s0 - travel * 1.9) % car.period) + car.period) % car.period }))
+  if (hero.lorry && hero.lorry.z > Z_MIN) traffic.push({ car: LORRY, z: hero.lorry.z })
+  const near = traffic.filter(c => c.z < LENGTH).sort((a, b) => b.z - a.z)
   const lights: (() => void)[] = []
 
   // Stage 4: a traffic officer steps into our lane with a STOP paddle, the patrol car on the shoulder, and we stop.
   const props: { z: number; paint: () => void }[] = []
-  if (f.stop > .01) {
-    const oz = lerp(36, 6.2, f.stop)
-    props.push({ z: oz + 9, paint: () => drawPatrol(ctx, v, oz + 9, dusk, f.stop, t, lit(oz + 9), lights) })
-    props.push({ z: oz, paint: () => drawOfficer(ctx, v, oz, dusk, f.stop, lit(oz)) })
+  const lays = hero.lays ?? []
+  for (const lay of lays) {
+    if (lay.kind === 'police') {
+      const pz = lay.s + 14 - travel, oz = lay.s + 8 - travel
+      if (pz < LENGTH && pz > Z_MIN) props.push({ z: pz, paint: () => drawPatrol(ctx, v, pz, ROAD.rail + LIP + 2.8, dusk, 1, t, lit(pz), lights) })
+      if (oz < LENGTH && oz > Z_MIN) props.push({ z: oz, paint: () => drawOfficer(ctx, v, oz, ROAD.rail + LIP + .3, dusk, 1, lit(oz)) })
+    }
+    const pz = lay.s - 6 - travel
+    if (lay.kind === 'parking' && pz < LENGTH && pz > Z_MIN) props.push({ z: pz, paint: () => drawParking(ctx, v, pz, f, dusk, fogOf(pz)) })
   }
+  props.sort((a, b) => b.z - a.z)
+  const layAt = (s: number) => layWidth(lays, s)
 
   // Warning triangles forty metres before each narrowing.
   for (let k = Math.ceil((travel - PINCH_AT + 40) / PINCH_PERIOD); PINCH_AT - 40 + k * PINCH_PERIOD < travel + LENGTH; k++) {
@@ -367,16 +426,37 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     ctx.fillStyle = fill
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.closePath(); ctx.fill()
   }
+  let kerbPrev: { foot: Edge; top: Edge; back: Edge } | null = null
   let li = 0
   let si = signs.length - 1
   let ti = 0
   let pi = 0
-  for (let i = 0, z = Z_MIN + LENGTH; z > Z_MIN; i++, z /= 1 + ROW) {
+  const rows: number[] = []
+  for (let z = Z_MIN + LENGTH; z > Z_MIN; z /= 1 + ROW) rows.push(z)
+  if (cine) for (let z = Z_MIN - .3; z > -BEHIND; z -= .3) rows.push(z)
+  let parPrev: { x: number; y: number; d: number }[] | null = null
+  for (let i = 0; i < rows.length; i++) {
+    const z = rows[i]
     // Terrain strip between the previous row and this one first.
     const s = travel + z
     const left = leftEdge(s)
-    const edges = [project(v, left - WALL_BACK, z, WALL_H), project(v, left - .2, z, 0), project(v, ROAD.rail + LIP, z, 0), project(v, ROAD.rail + LIP, z, -25), project(v, ROAD.rail + LIP, z, CLIFF), project(v, ROAD.rail + LIP, z, -90)]
-    if (prev) {
+    const wide = layAt(s)
+    const lipU = ROAD.rail + LIP + wide
+    const edges = [project(v, left - WALL_BACK, z, WALL_H), project(v, left - .2, z, 0), project(v, lipU, z, 0), project(v, lipU, z, -25), project(v, lipU, z, CLIFF), project(v, lipU, z, -90)]
+    if (prev && cine) {
+      // The free camera can stand on the road or look along it: cut the strips into pieces and leave
+      // out any piece reaching behind it.
+      const zp = rows[i - 1], sp = travel + zp, lp = leftEdge(sp), wp = ROAD.rail + LIP + layAt(sp)
+      const n = 10
+      for (let j = 0; j < n; j++) {
+        const a0 = j / n, a1 = (j + 1) / n
+        const u = (l: number, r: number, a: number) => l + (r - l) * a
+        const q = [project(v, u(lp - .2, wp, a0), zp, 0), project(v, u(left - .2, lipU, a0), z, 0), project(v, u(left - .2, lipU, a1), z, 0), project(v, u(lp - .2, wp, a1), zp, 0)]
+        if (q.every(p => p.d > .25)) solid(q[0], q[1], q[2], q[3], shade(roadBase, Math.abs(z - cine.z)))
+        const w = [project(v, u(lp - .2, lp - WALL_BACK, a0), zp, WALL_H * a0), project(v, u(left - .2, left - WALL_BACK, a0), z, WALL_H * a0), project(v, u(left - .2, left - WALL_BACK, a1), z, WALL_H * a1), project(v, u(lp - .2, lp - WALL_BACK, a1), zp, WALL_H * a1)]
+        if (w.every(p => p.d > .25)) solid(w[0], w[1], w[2], w[3], shade(wallBase, Math.abs(z - cine.z)))
+      }
+    } else if (prev) {
       ctx.globalAlpha = Math.min(1, Math.max(0, 1.15 - z / LENGTH) * 4) * f.land
       // The cliff face, only where it turns to face us: the outside of a bend ahead, dropping to the sea.
       // Screen-space winding: the face's quad turns anticlockwise only when we see its front.
@@ -406,6 +486,16 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
       solid(prev[0], edges[0], edges[1], prev[1], shade(wallBase, z))
     }
     prev = edges
+    // A low stone parapet along the outside of a lay-by.
+    if (wide > .3) {
+      const par = [project(v, lipU, z, 0), project(v, lipU, z, .75)]
+      if (parPrev && par.every(p => p.d > .25) && parPrev.every(p => p.d > .25)) {
+        const stone = Math.min(1, .45 + .55 * lit(z)) * (1 - .45 * dusk)
+        ctx.globalAlpha = fogOf(z)
+        solid(parPrev[0], par[0], par[1], parPrev[1], shadeHex('#7d7681', stone))
+      }
+      parPrev = par
+    } else parPrev = null
     // Then whatever stands on the strip just drawn, far to near.
     for (; li < land.length && land[li].z >= z; li++) {
       const { z: lz, p } = land[li]
@@ -413,7 +503,7 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
       // The narrowing pushes the cut into the road; the asphalt squeezes between the cut and the barrier.
       const at = travel + lz
       const u = p.u < ROAD.leftEdge ? p.u + PINCH_WIDTH * pinch(at)
-        : p.road ? ROAD.rail - (ROAD.rail - p.u) * (ROAD.rail - leftEdge(at)) / (ROAD.rail - ROAD.leftEdge) : p.u
+        : p.road ? ROAD.rail - (ROAD.rail - p.u) * (ROAD.rail - leftEdge(at)) / (ROAD.rail - ROAD.leftEdge) : p.u + layAt(at)
       const pt = project(v, u, lz, p.h)
       const sc = p.scale ?? 1
       const size = Math.min(30 * sc, Math.max(4, pt.k * .16 * sc))
@@ -422,16 +512,17 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
     }
     for (; si >= 0 && signs[si].z >= z; si--) {
       const sign = signs[si]
-      if (sign.warn) drawNarrows(ctx, v, sign.z, sign.s, f, dusk, fogOf(sign.z))
+      if (sign.sbend) drawSBend(ctx, v, sign.z, sign.s, !!sign.right, f, dusk, fogOf(sign.z))
+      else if (sign.warn) drawNarrows(ctx, v, sign.z, sign.s, f, dusk, fogOf(sign.z))
       else drawChevron(ctx, v, sign.z, sign.s, f, dusk, fogOf(sign.z), put)
     }
     for (; pi < props.length && props[pi].z >= z; pi++) props[pi].paint()
     // Lorries only on the open road and among the soft guardrails, where they give you a fright.
-    for (; ti < traffic.length && traffic[ti].z >= z; ti++) if (show) drawVehicle(ctx, v, traffic[ti].car, traffic[ti].z, dusk, fogOf(traffic[ti].z) * show, lit(traffic[ti].z), lights)
+    for (; ti < near.length && near[ti].z >= z; ti++) if (show) drawVehicle(ctx, v, near[ti].car, near[ti].z, dusk, fogOf(near[ti].z) * show, lit(near[ti].z), lights)
 
     // Edges of this row: wall top, wall foot, road left, road right, ravine lip, ravine floor.
     // The lip of the ravine, a crisp broken edge.
-    const lip = project(v, ROAD.rail + LIP, z, 0)
+    const lip = project(v, lipU, z, 0)
     put(color.rock, hash(i * 3) < .5 ? '.' : '-', lip.x, lip.y, Math.min(26, Math.max(4, (FOCAL / z) * .12)), fogOf(z) * .7 * lit(z) * f.land)
     // Moonlight silvers the edges facing us: the top of the cut and the lip of the drop.
     if (moon > .02) {
@@ -459,37 +550,40 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
         put(paintTint, h1 < .5 ? '=' : '-', dash.x, dash.y, size, fog * f.dash)
       }
     }
-    // Level 1: whitewashed boulders along the edge, one every metre and a half or so.
-    if (calm(s) < f.coverage && f.stones > .01) {
-      const prev = travel + z * (1 + ROW)
-      if (Math.floor(prev / 1.5) !== Math.floor(s / 1.5)) {
+    // Level 1: a raised concrete kerb along the edge, following the road: a lit top, a darker face.
+    if (calm(s) < f.coverage && f.stones > .01 && wide < .3) {
+      const kerb = { foot: project(v, ROAD.rail - .08, z, 0), top: project(v, ROAD.rail - .08, z, KERB_H), back: project(v, ROAD.rail + .06, z, KERB_H) }
+      if (kerbPrev) {
+        const light = Math.min(1, .45 + .55 * lit(z)) * (1 - .35 * dusk)
+        ctx.globalAlpha = Math.min(1, fogOf(z) * 1.3) * f.stones
+        const quad = (p: Edge[], fill: string) => {
+          ctx.fillStyle = fill; ctx.strokeStyle = fill; ctx.lineWidth = 1
+          ctx.beginPath(); ctx.moveTo(p[0].x, p[0].y); for (const q of p.slice(1)) ctx.lineTo(q.x, q.y); ctx.closePath(); ctx.fill(); ctx.stroke()
+        }
+        quad([kerbPrev.foot, kerb.foot, kerb.top, kerbPrev.top], shade(KERB, light * .62))
+        quad([kerbPrev.top, kerb.top, kerb.back, kerbPrev.back], shade(KERB, light))
+        // Joints every metre and a half.
         const n = Math.floor(s / 1.5)
-        const big = .8 + hash(n * 3) * .45
-        const c = project(v, ROAD.rail - .05, z, .26 * big)
-        const rx = .36 * big * c.k, ry = .28 * big * c.k
-        const light = Math.min(1, .45 + .55 * lit(z))
-        ctx.globalAlpha = fogOf(z) * f.stones
-        ctx.fillStyle = shade(WHITEWASH, light * (1 - .4 * dusk))
-        ctx.beginPath(); ctx.ellipse(c.x, c.y, rx, ry, 0, Math.PI, 0); ctx.lineTo(c.x + rx, c.y + ry * .9); ctx.lineTo(c.x - rx, c.y + ry * .9); ctx.closePath(); ctx.fill()
-        ctx.fillStyle = shade(color.rock, light * .8)
-        ctx.fillRect(c.x - rx, c.y + ry * .45, rx * 2, ry * .45)
-        const gsize = Math.min(30, Math.max(4, c.k * .14))
-        for (let j = 0; j < 4; j++) put(color.scree, j % 2 ? '#' : ':', c.x + (j - 1.5) * rx * .45, c.y + ry * (.2 + .3 * hash(n * 7 + j)), gsize, fogOf(z) * .6 * f.stones)
+        if (n !== Math.floor((travel + (rows[i - 1] ?? z)) / 1.5)) {
+          ctx.strokeStyle = shade(KERB, light * .35); ctx.lineWidth = Math.max(1, kerb.top.k * .012)
+          ctx.beginPath(); ctx.moveTo(kerb.foot.x, kerb.foot.y); ctx.lineTo(kerb.top.x, kerb.top.y); ctx.lineTo(kerb.back.x, kerb.back.y); ctx.stroke()
+        }
       }
-    }
+      kerbPrev = kerb
+    } else kerbPrev = null
     // Level 2: a timber fence, two round rails on stout posts every 2 m.
-    if (calm(s) < f.coverage && f.logs > .01) {
+    if (calm(s) < f.coverage && f.logs > .01 && wide < .3) {
       const bsize = Math.min(30, Math.max(5, (FOCAL / z) * .13))
       const a = fogOf(z) * (.55 + .45 * lit(z)) * f.logs
       for (const h of [.38, .44, .74, .8]) {
         const rail = project(v, ROAD.rail, z, h)
         put(hash(i * 11 + h * 10) < .5 ? WOOD : WOOD_DARK, hash(i * 17 + h * 10) < .7 ? '=' : '#', rail.x, rail.y, bsize * 1.4, a)
       }
-      const prev = travel + z * (1 + ROW)
+      const prev = travel + (rows[i - 1] ?? z * (1 + ROW))
       if (Math.floor(prev / 2) !== Math.floor(s / 2)) for (let j = 0; j < 10; j++) { const post = project(v, ROAD.rail + .06, z, j * .09); put(WOOD_DARK, '#', post.x, post.y, bsize * 1.5, a) }
     }
     // The barrier: W-beam in red and white 2 m panels, posts every 2 m, a reflector on every other post.
-    if (calm(s) < f.coverage && f.rail > .01) {
+    if (calm(s) < f.coverage && f.rail > .01 && wide < .3) {
       const panel = Math.floor(s / 2) % 2 ? color.hard : color.paint
       const bsize = Math.min(30, Math.max(5, (FOCAL / z) * .12))
       for (const h of [.5, .58, .66, .74]) {
@@ -497,7 +591,7 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
         const beam = project(v, ROAD.rail, z, h)
         put(panel, h2 < .5 ? '#' : h2 < .8 ? '=' : '@', beam.x, beam.y, bsize, fogOf(z) * (.55 + .45 * lit(z)) * f.rail)
       }
-      const prev = travel + z * (1 + ROW)
+      const prev = travel + (rows[i - 1] ?? z * (1 + ROW))
       if (Math.floor(prev / 2) !== Math.floor(s / 2)) {
         for (let j = 0; j < 9; j++) { const post = project(v, ROAD.rail + .08, z, j * .085); put(color.steel, '|', post.x, post.y, bsize, fogOf(z) * .8 * f.rail) }
         if (Math.floor(s / 2) % 2 === 0) { const eye = project(v, ROAD.rail - .05, z, .82); put(color.amber, '*', eye.x, eye.y, bsize * 1.2, fogOf(z) * (.2 + dusk * 1.1) * f.rail) }
@@ -508,26 +602,31 @@ export function draw(canvas: HTMLCanvasElement, f: Light, travel: number, t: num
   ctx.globalCompositeOperation = 'lighter'
   for (const light of lights) light()
   ctx.globalCompositeOperation = 'source-over'
-  // Our own car, just ahead of the camera: we ride behind it all the way.
+  // Our own car, just ahead of the camera, and anyone walking round it, far to near.
   if (f.car > .01) drawHero(ctx, v, f, dusk, moon, t, hero, put)
+  if (hero.puff) drawPuff(put, v, hero.u ?? .35, hero.puff, t)
   const peak = swerve
   ctx.globalAlpha = 1
   ctx.setTransform(scale, 0, 0, scale, 0, 0)
-  if (turn > .001) { drawBay(ctx, t, (1 - turn) * W); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over' }
+  // The dials, in the corner, level and still.
+  if (hero.hud && f.car > .3) drawHud(ctx, hero.hud, Math.min(1, (f.car - .3) * 1.6) * hero.spawn)
+  if (hero.paused) drawPaused(ctx)
+  if (hero.coin) drawCoin(ctx, performance.now() / 1000)
   // Level and still, over the road, clear of the sheet's text on the left.
   if (hero.crash >= 0) drawGameOver(ctx, hero.crash)
   swerve = 0
+  cine = null; camU = 0; camYaw = 0
   return peak
 }
 
 // Oncoming traffic. Each vehicle comes round on its own loop; `lane` pushes it towards the centre line.
 type Vehicle = { kind: 'car' | 'moto' | 'truck'; s0: number; period: number; body: string; lane: number }
+/** The lorry the script sends; it has no loop of its own. */
+const LORRY: Vehicle = { kind: 'truck', s0: 0, period: 1, body: '#c9cdd2', lane: .6 }
 const TRAFFIC: Vehicle[] = [
   { kind: 'car', s0: 189.5, period: 300, body: '#2d3a4a', lane: 0 },
   { kind: 'moto', s0: 229.5, period: 300, body: '#1c1d22', lane: -.3 },
   { kind: 'car', s0: 29.5, period: 300, body: '#6a2329', lane: .1 },
-  { kind: 'truck', s0: 241.5, period: 300, body: '#c9cdd2', lane: .6 },
-  { kind: 'truck', s0: 391.5, period: 300, body: '#d8b23a', lane: .6 },
 ]
 
 function shade(hex: string, k: number) {
@@ -543,7 +642,7 @@ function box(ctx: CanvasRenderingContext2D, v: View, u: number, z: number, len: 
     ctx.fillStyle = fill
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.closePath(); ctx.fill()
   }
-  const bend = X(v.s0 + z + len / 2) - v.x0 - v.heading * (z + len / 2)
+  const bend = along(v.bend, z + len / 2)
   const l = -w / 2, r = w / 2
   if (u + bend + l > 0) quad(P(l, 0, h0), P(l, len, h0), P(l, len, h1), P(l, 0, h1), shade(body, .55 * light))
   if (u + bend + r < 0) quad(P(r, 0, h0), P(r, len, h0), P(r, len, h1), P(r, 0, h1), shade(body, .55 * light))
@@ -627,76 +726,257 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: View, car: Vehicle, z: nu
   })
 }
 
-// Our car: a red open roadster seen from behind, two heads over the windscreen, drawn as a block of
-// glyphs. Left half only; the right mirrors it, with the passenger's hair in another colour.
-const HERO_HALF = [
-  '             dd     ',
-  '            dddd    ',
-  '      wwwwwwddddwwww',
-  '    wwxxxxxxddddxxxx',
-  '   hhhhhhhhhhhhhhhhh',
-  ' hhRRRRRRRRRRRRRRRRR',
-  'hRRRRRRRRRRRRRRRRRRR',
-  'rkttttttaRRRRRRRRRRR',
-  'rkttttttaRRRRRRRRppp',
-  'rrrrrrrrrrrrrrrrrppp',
-  'kggggggggggggggggggg',
-  'kkkkkk kkkkkkkkkkkkk',
-  'kkkkkk   g          ',
-]
-const HERO = HERO_HALF.map(row => row + [...row].reverse().join('').replace(/d/g, 'b'))
-const HERO_CELL: Record<string, { fill: string; ink: string; glyph: string }> = {
-  R: { fill: '#c41f33', ink: '#ff5a64', glyph: '#' },
-  h: { fill: '#e8384a', ink: '#ffb0b4', glyph: '=' },
-  r: { fill: '#7c1220', ink: '#c41f33', glyph: ':' },
-  k: { fill: '#0e0f13', ink: '#3a3d46', glyph: '.' },
-  g: { fill: '#8b929c', ink: '#e8ecf0', glyph: '=' },
-  t: { fill: '#9a0f1c', ink: '#ff3b3b', glyph: '@' },
-  a: { fill: '#b8660a', ink: '#ffb21c', glyph: '*' },
-  p: { fill: '#e9e6dc', ink: '#2a2d33', glyph: '-' },
-  w: { fill: '#3a4a66', ink: '#b8d0ec', glyph: '-' },
-  x: { fill: '#24151a', ink: '#4a2a30', glyph: '.' },
-  d: { fill: '#1e1712', ink: '#4a3a2c', glyph: '%' },
-  b: { fill: '#6a4420', ink: '#c08a4a', glyph: '%' },
-}
-const HERO_COLS = HERO[0].length
-const HERO_ROWS = HERO.length
-/** Car width and height in metres, the glyph cells stretched to fit. */
-const HERO_W = 1.95
-const HERO_H = 1.12
-const HERO_Z = 2.8
+/** Car width and height in metres: a rear-engined coupé, low and narrow. */
+const HERO_W = 1.7
+const HERO_H = 1.22
+const HERO_Z = 3.3
+/** Length and height of the car, for drawing it in three dimensions. */
+/** How far behind the road camera the free camera can see the ground. */
+const BEHIND = 30
+const LAY_W = 5.6
 const WOOD = '#9a6a3c'
 const WOOD_DARK = '#5e3e22'
 const WHITEWASH = '#e4ded0'
+const KERB = '#9a958b'
+/** The kerb's height: a hand and a half, enough to throw a wheel back. */
+const KERB_H = .24
 /** How far right we can go: the right tyre's outer face on the lip of the drop. */
 const HERO_EDGE = ROAD.rail + LIP - .05 - HERO_W / 2 - .35
-const heroSprites = new Map<string, HTMLCanvasElement>()
+const RED = '#c0101e'
+function shadeHex(hex: string, k: number) { return shade(hex, k) }
 
-function heroSprite(light: number, brake: boolean) {
-  const key = `${light}|${brake}`
-  const hit = heroSprites.get(key)
-  if (hit) return hit
-  const cw = 14, ch = 24
-  const c = document.createElement('canvas')
-  c.width = HERO_COLS * cw
-  c.height = HERO_ROWS * ch
-  const g = c.getContext('2d')!
-  g.font = `700 ${ch * .9}px ui-monospace, Menlo, Consolas, monospace`
-  g.textAlign = 'center'
-  g.textBaseline = 'middle'
-  const k = light / 10
-  HERO.forEach((row, y) => [...row].forEach((cell, x) => {
-    const spec = HERO_CELL[cell]
-    if (!spec) return
-    const glow = cell === 't' && brake
-    // Solid behind, a glyph on top: it reads as a car from the back of the room and as text up close.
-    g.fillStyle = shade(spec.fill, glow ? 1.6 : k)
-    g.fillRect(x * cw, y * ch, cw + .5, ch + .5)
-    g.fillStyle = shade(spec.ink, glow ? 1.4 : Math.min(1.2, k * 1.1))
-    g.fillText(spec.glyph, x * cw + cw / 2, y * ch + ch / 2 + 1)
-  }))
-  heroSprites.set(key, c)
-  return c
+/** How far a lay-by widens the ground past the lip at `s`, eased in and out over 8 m. */
+function layWidth(lays: LayBy[], s: number) {
+  let w = 0
+  for (const l of lays) {
+    const d = s - l.s
+    if (d < -8 || d > l.len + 8) continue
+    w = Math.max(w, LAY_W * smooth((d + 8) / 8) * (1 - smooth((d - l.len) / 8)))
+  }
+  return w
+}
+
+/** A blue parking sign before the lay-by. */
+function drawParking(ctx: CanvasRenderingContext2D, v: View, z: number, _f: Light, dusk: number, fog: number) {
+  const u = ROAD.rail + LIP + .3
+  const top = project(v, u, z, 2.1), bottom = project(v, u, z, 1.45), post = project(v, u, z, 0)
+  const h = bottom.y - top.y
+  if (h < 2 || top.d < .3) return
+  ctx.globalAlpha = fog * (.7 + .3 * dusk)
+  ctx.fillStyle = color.steel
+  ctx.fillRect(top.x - Math.max(1, h * .04), bottom.y, Math.max(2, h * .08), post.y - bottom.y)
+  
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(top.x - h / 2, top.y, h, h)
+  ctx.fillStyle = color.chevron; ctx.fillRect(top.x - h * .44, top.y + h * .06, h * .88, h * .88)
+  ctx.fillStyle = '#ffffff'; ctx.font = `800 ${Math.round(h * .7)}px system-ui, sans-serif`
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.fillText('P', top.x, top.y + h * .53)
+}
+
+/** Exhaust on a cold start: a few grey puffs drifting back from the tailpipes. */
+function drawPuff(put: ReturnType<typeof putter>, v: View, u: number, k: number, t: number) {
+  for (let j = 0; j < 26; j++) {
+    const life = (k + hash(j * 7)) % 1
+    const side = j % 2 ? .28 : -.28
+    const p = project(v, u + side + (hash(j * 3) - .5) * .5 * life, HERO_Z - .1 - life * 1.4, .15 + life * .6)
+    if (p.d < .3) continue
+    put(color.steel, life < .4 ? '@' : life < .7 ? '%' : '.', p.x, p.y, (.18 + life * .5) * p.k * .5, (1 - life) * .5 * Math.min(1, k * 3) * (1 - smooth((t % 1) * 0)))
+  }
+}
+
+/** A small pause mark above the dials. */
+function drawPaused(ctx: CanvasRenderingContext2D) {
+  ctx.save()
+  ctx.globalAlpha = .9
+  ctx.fillStyle = 'rgb(8 9 11 / .85)'
+  ctx.beginPath(); ctx.roundRect(1656, 742, 190, 46, 6); ctx.fill()
+  ctx.fillStyle = color.amber
+  ctx.fillRect(1674, 753, 7, 24); ctx.fillRect(1687, 753, 7, 24)
+  ctx.font = '700 22px ui-monospace, Menlo, Consolas, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+  ctx.fillText('PAUSE · M', 1706, 766)
+  ctx.restore()
+}
+
+/** The arcade's attract screen: INSERT COIN blinking over the road until the first M. */
+function drawCoin(ctx: CanvasRenderingContext2D, t: number) {
+  ctx.save()
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  if (Math.floor(t * 1.6) % 2 === 0) {
+    ctx.font = '900 96px ui-monospace, Menlo, Consolas, monospace'
+    ctx.fillStyle = '#7c1220'
+    ctx.fillText('INSERT COIN', 1500 + 5, 200 + 5)
+    ctx.fillStyle = color.amber
+    ctx.fillText('INSERT COIN', 1500, 200)
+  }
+  ctx.font = '700 34px ui-monospace, Menlo, Consolas, monospace'
+  ctx.fillStyle = 'rgb(255 244 214 / .85)'
+  ctx.fillText('PRESS  M', 1500, 275)
+  ctx.restore()
+}
+
+/** The moonlit bay as a panorama, `dx` pixels right of where it sits when we look straight out to sea. */
+let bayCanvas: HTMLCanvasElement | null = null
+let bayDrawn = -1
+function drawBayPanorama(ctx: CanvasRenderingContext2D, t: number, dx: number, alpha: number) {
+  if (alpha <= .01 || dx > W || dx < -W) return
+  bayCanvas ??= document.createElement('canvas')
+  if (bayCanvas.width !== W) { bayCanvas.width = W; bayCanvas.height = H }
+  // The bay changes slowly (twinkles, the lighthouse): redraw it ten times a second, not every frame.
+  if (t - bayDrawn > .1 || t < bayDrawn) {
+    bayDrawn = t
+    const b = bayCanvas.getContext('2d')!
+    b.setTransform(1, 0, 0, 1, 0, 0)
+    b.clearRect(0, 0, W, H)
+    drawBay(b, t, 0)
+  }
+  ctx.save()
+  ctx.globalAlpha = alpha
+  ctx.drawImage(bayCanvas, dx, 0, W, H)
+  // Soften its left edge into the night sky beside it.
+  ctx.restore()
+}
+
+/** Two dials bottom right: speed on the left, a bigger rev counter with the gear and digital speed in it. */
+function drawHud(ctx: CanvasRenderingContext2D, hud: Hud, alpha: number) {
+  if (alpha <= .01) return
+  ctx.save()
+  ctx.globalAlpha = alpha
+  const mono = 'ui-monospace, Menlo, Consolas, monospace'
+  const dial = (cx: number, cy: number, r: number, max: number, step: number, minor: number, label: (v: number) => string, red: number | null, value: number, needle: string) => {
+    const a0 = Math.PI * .75, sweep = Math.PI * 1.5
+    const ang = (v: number) => a0 + sweep * Math.min(1, Math.max(0, v / max))
+    ctx.fillStyle = 'rgb(8 9 11 / .86)'
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill()
+    ctx.strokeStyle = '#3a3f48'; ctx.lineWidth = 3
+    ctx.beginPath(); ctx.arc(cx, cy, r - 1.5, 0, Math.PI * 2); ctx.stroke()
+    if (red !== null) { ctx.strokeStyle = color.hard; ctx.lineWidth = r * .07; ctx.beginPath(); ctx.arc(cx, cy, r * .86, ang(red), ang(max)); ctx.stroke() }
+    for (let v = 0; v <= max + 1e-6; v += minor) {
+      const major = Math.abs(v / step - Math.round(v / step)) < 1e-6
+      const a = ang(v), c = Math.cos(a), si = Math.sin(a)
+      ctx.strokeStyle = red !== null && v >= red ? color.hard : '#c9ced6'
+      ctx.lineWidth = major ? 3 : 1.5
+      ctx.beginPath(); ctx.moveTo(cx + c * r * (major ? .74 : .8), cy + si * r * (major ? .74 : .8)); ctx.lineTo(cx + c * r * .9, cy + si * r * .9); ctx.stroke()
+      if (major) {
+        ctx.fillStyle = '#e6e9ee'; ctx.font = `600 ${Math.round(r * .15)}px ${mono}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText(label(v), cx + c * r * .58, cy + si * r * .58)
+      }
+    }
+    const a = ang(value)
+    ctx.strokeStyle = needle; ctx.lineWidth = r * .045; ctx.lineCap = 'round'
+    
+    ctx.beginPath(); ctx.moveTo(cx - Math.cos(a) * r * .12, cy - Math.sin(a) * r * .12); ctx.lineTo(cx + Math.cos(a) * r * .86, cy + Math.sin(a) * r * .86); ctx.stroke()
+    ctx.fillStyle = '#1b1e24'; ctx.beginPath(); ctx.arc(cx, cy, r * .09, 0, Math.PI * 2); ctx.fill()
+  }
+  dial(1560, 905, 82, 320, 40, 20, v => String(v), null, hud.kmh, '#f2f4f7')
+  const tx = 1752, ty = 880, tr = 108
+  dial(tx, ty, tr, 8000, 1000, 500, v => String(v / 1000), 7000, hud.rpm, '#ff6a2a')
+  // Digital speed and gear inside the rev counter, as the real thing does it.
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#f2f4f7'; ctx.font = `800 ${Math.round(tr * .27)}px ${mono}`
+  ctx.fillText(String(Math.round(hud.kmh)), tx, ty + tr * .66)
+  ctx.fillStyle = '#8b929c'; ctx.font = `600 ${Math.round(tr * .1)}px ${mono}`
+  ctx.fillText('km/h', tx, ty + tr * .87)
+  ctx.fillStyle = 'rgb(8 9 11 / .9)'; ctx.beginPath(); ctx.roundRect(tx - tr * .13, ty + tr * .17, tr * .26, tr * .26, 4); ctx.fill()
+  ctx.strokeStyle = color.amber; ctx.lineWidth = 1.5; ctx.stroke()
+  ctx.fillStyle = color.amber; ctx.font = `800 ${Math.round(tr * .2)}px ${mono}`
+  ctx.fillText(String(hud.gear + 1), tx, ty + tr * .305)
+  ctx.restore()
+}
+
+/** Our car from behind, after the 992 Carrera S: wide hips that swell out over the rear wheels, a
+ *  fastback roof with a big rear window, the louvred engine grille with the vertical third brake light,
+ *  a thin light bar right across the tail ending in smoked lamp clusters, and a black diffuser with
+ *  two big oval tailpipes either side of the plate. Drawn at the origin (bottom centre). */
+function drawCar(ctx: CanvasRenderingContext2D, w: number, h: number, light: number, brake: boolean, heads = true) {
+  const X = (x: number) => x * w, Y = (y: number) => -y * h
+  const col = (hex: string, m = 1) => shade(hex, light * m)
+  const path = (pts: [number, number][], mirror = true) => {
+    const all = mirror ? [...pts, ...pts.slice().reverse().map(([x, y]) => [-x, y] as [number, number])] : pts
+    const mid = (p: [number, number], q: [number, number]) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]
+    ctx.beginPath()
+    const m0 = mid(all[all.length - 1], all[0])
+    ctx.moveTo(X(m0[0]), Y(m0[1]))
+    for (let i = 0; i < all.length; i++) {
+      const p = all[i], m = mid(p, all[(i + 1) % all.length])
+      ctx.quadraticCurveTo(X(p[0]), Y(p[1]), X(m[0]), Y(m[1]))
+    }
+    ctx.closePath()
+  }
+  // Tyres: only their bottoms show under the bumper.
+  ctx.fillStyle = col('#08090b')
+  for (const sx of [-1, 1]) { ctx.beginPath(); ctx.roundRect(X(sx > 0 ? .31 : -.48), Y(.2), X(.17), h * .2, w * .015); ctx.fill() }
+  // Mirrors, out on stalks beyond the narrow cabin.
+  for (const sx of [-1, 1]) {
+    ctx.fillStyle = col(RED, .75)
+    ctx.beginPath(); ctx.moveTo(X(sx * .3), Y(.7)); ctx.lineTo(X(sx * .42), Y(.71)); ctx.lineTo(X(sx * .42), Y(.69)); ctx.lineTo(X(sx * .3), Y(.68)); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(X(sx * .455), Y(.71), w * .045, h * .035, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = col('#0b0c10'); ctx.beginPath(); ctx.ellipse(X(sx * .46), Y(.708), w * .03, h * .022, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  // The body: bell-shaped from behind, hips at full width, the roof narrow and low.
+  path([[.05, .07], [.44, .075], [.49, .16], [.5, .3], [.5, .42], [.47, .52], [.36, .58], [.29, .64], [.26, .76], [.22, .88], [.14, .955], [.04, .975]])
+  const body = ctx.createLinearGradient(0, Y(.98), 0, Y(.06))
+  body.addColorStop(0, col(RED, .7)); body.addColorStop(.3, col(RED, .85)); body.addColorStop(.47, col(RED, 1.25))
+  body.addColorStop(.6, col(RED, 1)); body.addColorStop(.85, col(RED, .78)); body.addColorStop(1, col(RED, .55))
+  ctx.fillStyle = body; ctx.fill()
+  // The light catching each hip.
+  ctx.save(); ctx.clip()
+  for (const sx of [-1, 1]) {
+    const g = ctx.createRadialGradient(X(sx * .4), Y(.5), 0, X(sx * .4), Y(.5), w * .2)
+    g.addColorStop(0, 'rgb(255 255 255 / .22)'); g.addColorStop(1, 'rgb(255 255 255 / 0)')
+    ctx.fillStyle = g; ctx.fillRect(X(sx * .4) - w * .2, Y(.5) - w * .2, w * .4, w * .4)
+  }
+  ctx.restore()
+  // Rear window, wide and raked, with the two of us in it.
+  path([[.04, .665], [.235, .665], [.225, .77], [.2, .87], [.13, .92], [.04, .93]])
+  const glass = ctx.createLinearGradient(0, Y(.93), 0, Y(.66))
+  glass.addColorStop(0, col('#39445c')); glass.addColorStop(1, col('#0b0f19'))
+  ctx.fillStyle = glass; ctx.fill()
+  ctx.save(); ctx.clip()
+  for (const [x, tint] of heads ? [[-.1, '#1e1611'], [.1, '#6a4420']] as const : []) {
+    ctx.fillStyle = col('#15171c'); ctx.beginPath(); ctx.roundRect(X(x - .075), Y(.84), X(.15), h * .18, w * .03); ctx.fill()
+    ctx.fillStyle = col(tint); ctx.beginPath(); ctx.ellipse(X(x), Y(.8), w * .042, h * .06, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.fillStyle = 'rgb(255 255 255 / .07)'
+  ctx.beginPath(); ctx.moveTo(X(-.2), Y(.665)); ctx.lineTo(X(-.08), Y(.93)); ctx.lineTo(X(.0), Y(.93)); ctx.lineTo(X(-.12), Y(.665)); ctx.fill()
+  ctx.restore()
+  // Engine grille under the window: black, vertical louvres, the third brake light in the middle.
+  ctx.fillStyle = col('#0a0b0e')
+  ctx.beginPath(); ctx.roundRect(X(-.24), Y(.665), X(.48), h * .1, w * .008); ctx.fill()
+  ctx.fillStyle = col('#4a4f59')
+  for (let i = 0; i < 22; i++) { const x = -.225 + i * .0214; if (Math.abs(x + .004) > .035) ctx.fillRect(X(x), Y(.655), Math.max(1, w * .005), h * .08) }
+  ctx.fillStyle = brake ? '#ff2a35' : col('#8a0c16')
+  for (const sx of [-1, 1]) ctx.fillRect(X(sx > 0 ? .008 : -.022), Y(.66), X(.014), h * .085)
+  // The light bar: a dark band right across the tail, thin in the middle, the lamps smoked at the ends,
+  // and one red line of light along it.
+  ctx.fillStyle = col('#16070a')
+  ctx.beginPath()
+  ctx.moveTo(X(-.49), Y(.5)); ctx.quadraticCurveTo(X(-.36), Y(.505), X(-.3), Y(.49)); ctx.lineTo(X(.3), Y(.49)); ctx.quadraticCurveTo(X(.36), Y(.505), X(.49), Y(.5))
+  ctx.lineTo(X(.47), Y(.44)); ctx.quadraticCurveTo(X(.36), Y(.43), X(.3), Y(.465)); ctx.lineTo(X(-.3), Y(.465)); ctx.quadraticCurveTo(X(-.36), Y(.43), X(-.47), Y(.44))
+  ctx.closePath(); ctx.fill()
+  ctx.strokeStyle = brake ? '#ff3a44' : col('#e01828', 1.1)
+  ctx.lineWidth = Math.max(1.5, h * .012); ctx.lineCap = 'round'
+  ctx.beginPath(); ctx.moveTo(X(-.47), Y(.485)); ctx.quadraticCurveTo(X(0), Y(.482), X(.47), Y(.485)); ctx.stroke()
+  ctx.lineCap = 'butt'
+  for (const sx of [-1, 1]) {
+    ctx.fillStyle = brake ? 'rgb(255 50 60 / .9)' : col('#7a0a12', 1.2)
+    ctx.beginPath(); ctx.ellipse(X(sx * .41), Y(.468), w * .055, h * .016, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  // Rear bumper: the black diffuser wrapping round, two big oval tailpipes, the plate between them.
+  ctx.fillStyle = col('#101114')
+  ctx.beginPath()
+  ctx.moveTo(X(-.46), Y(.22)); ctx.lineTo(X(-.15), Y(.2)); ctx.lineTo(X(-.13), Y(.215)); ctx.lineTo(X(.13), Y(.215)); ctx.lineTo(X(.15), Y(.2)); ctx.lineTo(X(.46), Y(.22))
+  ctx.quadraticCurveTo(X(.47), Y(.12), X(.42), Y(.07)); ctx.lineTo(X(-.42), Y(.07)); ctx.quadraticCurveTo(X(-.47), Y(.12), X(-.46), Y(.22))
+  ctx.closePath(); ctx.fill()
+  for (const sx of [-1, 1]) {
+    ctx.fillStyle = col('#c9cdd4'); ctx.beginPath(); ctx.ellipse(X(sx * .28), Y(.13), w * .07, h * .045, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = '#040405'; ctx.beginPath(); ctx.ellipse(X(sx * .28), Y(.13), w * .056, h * .033, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = col('#5a0a10'); ctx.fillRect(X(sx > 0 ? .38 : -.44), Y(.235), X(.06), h * .012)
+  }
+  ctx.fillStyle = col('#e4e2da')
+  ctx.beginPath(); ctx.roundRect(X(-.1), Y(.2), X(.2), h * .085, w * .006); ctx.fill()
+  ctx.fillStyle = col('#2a2d33')
+  ctx.fillRect(X(-.07), Y(.17), X(.14), h * .028)
 }
 
 /** What the road's protection is in a form: nothing, paint only, or steel where it is needed. */
@@ -704,36 +984,40 @@ export type Regime = 'none' | 'soft' | 'hard'
 export const regimeOf = (f: Form): Regime => f.coverage > .3 ? 'hard' : f.paintTint > .5 || f.paint > .5 ? 'soft' : 'none'
 
 /** Our car's state beyond the road: `crash` seconds since we went over (-1 if not), `spawn` 0→1 fading back in. */
-export type Hero = { crash: number; spawn: number }
-const HERO_IDLE: Hero = { crash: -1, spawn: 1 }
+export type Hud = { kmh: number; rpm: number; gear: number }
+/** A widening on the sea side: where the police wait, or where we pull in at the end. */
+export type LayBy = { s: number; len: number; kind: 'police' | 'parking' }
+export type Hero = {
+  crash: number; spawn: number; lorry: { z: number; outcome: Cue['outcome'] } | null; braking: boolean; hud?: Hud | null
+  /** Our car across the road and its heading off the road's line; the road camera's offset and turn. */
+  u?: number; yaw?: number; cam?: { u: number; yaw: number }
+  lays?: LayBy[]
+  /** The free camera, for the closing shot; exhaust as the engine starts. */
+  cine?: Cine | null; puff?: number
+  /** Waiting for the first M: the arcade's INSERT COIN. */
+  coin?: boolean
+  /** How much of the moonlit bay shows, at the end. */
+  bay?: number
+  paused?: boolean
+}
+const HERO_IDLE: Hero = { crash: -1, spawn: 1, lorry: null, braking: false }
 /** The car's centre when its right side rubs the barrier. */
 const HERO_RAIL = ROAD.rail - .04 - HERO_W / 2
 
-/**
- * Decide what a close pass with a lorry does to us. With nothing at the edge, a pass on a bend puts us
- * over, and so does half of the rest. With paint, we keep to our side unless the bend is sharp and we
- * are unlucky. With steel, we never go over.
- */
-export function overTheEdge(f: Form, travel: number, n: number) {
-  const bend = Math.abs(curvature(travel + HERO_Z)) / C_MAX
-  const luck = hash(n * 7 + 3)
-  const regime = regimeOf(f)
-  if (regime === 'none') return bend > .3 || luck < .5
-  if (regime === 'soft') return bend > .35 && luck < .6
-  return false
-}
 
 function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number, moon: number, t: number, hero: Hero, put: (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => void) {
   const regime = regimeOf(f)
   const s = v.s0 + HERO_Z
-  const railed = regime === 'hard' && calm(s) < f.coverage
+  // Pulled over into a lay-by there is no barrier beside us, and nothing to push us back.
+  const railed = regime === 'hard' && calm(s) < f.coverage && (hero.u ?? .35) < 1 && layWidth(hero.lays ?? [], s) < .3
   // When the lorry comes we squeeze over to the edge. Without steel, the right wheels stop on the lip;
   // with steel there, we go further and the barrier pushes back: the car scrapes along it and bounces in.
-  let u = .35 + HERO_EDGE * swerve
+  const base = hero.u ?? .35
+  let u = base + HERO_EDGE * swerve
   let contact = 0
   if (railed) {
     // Usually we just tuck in short of it; on a close one we hit it and it throws us back.
-    const want = .35 + (HERO_RAIL - .35 + (extreme ? .45 : -.12)) * swerve
+    const want = base + (HERO_RAIL - base + (extreme ? .45 : -.12)) * swerve
     contact = Math.max(0, want - HERO_RAIL) / .45
     u = Math.min(want, HERO_RAIL) - contact * .06 * (1 + Math.sin(t * 38))
   }
@@ -750,24 +1034,21 @@ function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number
   const foot = project(v, u, HERO_Z, lift)
   const w = HERO_W * foot.k
   const h = HERO_H * foot.k
-  // It leans out of the bends ahead and bobs a little on the stones while it moves.
-  const turn = c >= 0 ? 0 : curvature(v.s0 + 12) / C_MAX
-  const moving = c >= 0 ? 0 : Math.min(1, f.speed / 3)
-  const bob = moving * (Math.sin(t * 17) * 1.2 + Math.sin(t * 5.3) * (1 + 2 * f.gravel)) + contact * Math.sin(t * 61) * (3 + 6 * f.stones + 3 * f.logs)
-  const light = Math.round(Math.min(10, Math.max(2, 10 * ((1 - .55 * dusk) + .25 * moon))))
-  const brake = f.stop > .3 || f.speed < 1.5 || c >= 0 || contact > .1
-  const sprite = heroSprite(light, brake)
-  if (alpha > .01) {
+  // The car holds still on the screen; it only shudders against the barrier.
+  const bob = contact * Math.sin(t * 61) * (3 + 6 * f.stones + 3 * f.logs)
+  // Its own paint keeps its colour after dark: the road's lamps and the moon are on it.
+  const light = Math.min(1, .82 + .18 * (1 - dusk) + .1 * moon)
+  const brake = c >= 0 || contact > .1 || hero.braking
+  const k = foot.k / 100
+  if (alpha > .01 && foot.d > .3) {
     ctx.save()
     ctx.globalAlpha = alpha
-    if (c < 0) {
-      ctx.fillStyle = 'rgb(0 0 0 / .45)'
-      ctx.beginPath(); ctx.ellipse(foot.x, foot.y - h * .02, w * .56, h * .07, 0, 0, Math.PI * 2); ctx.fill()
-    }
-    ctx.translate(foot.x + turn * 18, foot.y + bob)
-    ctx.rotate(roll)
-    ctx.transform(1, 0, -turn * .06, 1, 0, 0)
-    ctx.drawImage(sprite, -w / 2, -h, w, h)
+    ctx.translate(foot.x, foot.y + bob)
+    if (roll) ctx.rotate(roll)
+    ctx.fillStyle = 'rgb(0 0 0 / .4)'
+    ctx.beginPath(); ctx.ellipse(0, 0, w * .56, h * .07, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.scale(k, k)
+    drawCar(ctx, 170, 128, light, brake)
     ctx.restore()
   }
   // Gravel spitting off the edge from under the right wheel while we hug it, and a shower of it as we go.
@@ -810,12 +1091,13 @@ function drawHero(ctx: CanvasRenderingContext2D, v: View, f: Light, dusk: number
   }
   // Tail lights: on from dusk, bright when braking. Added on top, as light is.
   const lamp = (brake ? .9 : .15 + .55 * dusk) * alpha
-  if (lamp > .02 && c < 0) {
+  if (lamp > .02 && c < 0 && !roll) {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
     for (const side of [-1, 1]) {
-      const x = foot.x + turn * 18 + side * w * (12.5 / HERO_COLS)
-      const y = foot.y + bob - h * (1 - 9 / HERO_ROWS)
+      if (foot.d < .3) continue
+      const x = foot.x + side * .41 * w
+      const y = foot.y + bob - .6 * foot.k
       const r = w * .16
       const g = ctx.createRadialGradient(x, y, 0, x, y, r)
       g.addColorStop(0, `rgb(255 60 60 / ${lamp * .7})`)
@@ -866,8 +1148,8 @@ const headTop = (x: number) => BAY_HORIZON + 2 - (14 + Math.max(0, 1 - ((x - 260
 
 function drawBay(ctx: CanvasRenderingContext2D, t: number, dx: number) {
   ctx.save()
-  ctx.translate(dx, 0)
-  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip()
+  ctx.translate(dx, HORIZON - BAY_HORIZON)
+  ctx.beginPath(); ctx.rect(0, 0, W, H + BAY_HORIZON - HORIZON); ctx.clip()
   ctx.globalCompositeOperation = 'source-over'
   ctx.globalAlpha = 1
   const put = (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => {
@@ -908,7 +1190,7 @@ function drawBay(ctx: CanvasRenderingContext2D, t: number, dx: number) {
   sea.addColorStop(.4, '#060c1e')
   sea.addColorStop(1, '#02040a')
   ctx.fillStyle = sea
-  ctx.fillRect(0, BAY_HORIZON, W, H - BAY_HORIZON)
+  ctx.fillRect(0, BAY_HORIZON, W, H)
   ctx.save()
   ctx.beginPath(); ctx.rect(0, BAY_HORIZON + 1, W, H); ctx.clip()
   ctx.globalCompositeOperation = 'lighter'
@@ -959,34 +1241,43 @@ function drawBay(ctx: CanvasRenderingContext2D, t: number, dx: number) {
   glow(735, headTop(735) - 5, 22, 1, 1, [[0, `rgb(255 250 230 / ${.3 + .7 * beam})`], [1, 'rgb(255 250 230 / 0)']])
   for (const [x, y] of [[880, 640], [1560, 700]]) { put(color.paint, '.', x, y, 10, .8); put(color.amber, '.', x + 8, y, 8, .6) }
   ctx.globalCompositeOperation = 'source-over'
-  // The viewpoint: a stone parapet across the bottom, our car pulled in against it, facing the bay.
-  ctx.globalAlpha = 1
-  ctx.fillStyle = '#07080c'
-  ctx.fillRect(0, H - 120, W, 120)
-  for (let x = 0; x < W; x += 22) put(color.rock, hash(x) < .5 ? '#' : '=', x + 11, H - 118, 22, .35)
-  for (let x = 0; x < W; x += 60) { ctx.fillStyle = '#0c0d12'; ctx.fillRect(x, H - 128, 56, 12) }
-  const car = heroSprite(4, false)
-  const cw = 380, ch = cw * HERO_H / HERO_W
-  ctx.globalAlpha = 1
-  ctx.drawImage(car, MOON.x - cw / 2 + 120, H - 40 - ch, cw, ch)
   ctx.restore()
 }
 
 /** A traffic officer in our lane: reflective vest, white helmet, right arm up with a STOP paddle. */
-function drawOfficer(ctx: CanvasRenderingContext2D, v: View, z: number, dusk: number, show: number, lit: number) {
-  const s = v.s0 + z
-  const u = centre(s) + 1.3
+function drawOfficer(ctx: CanvasRenderingContext2D, v: View, z: number, u: number, _dusk: number, show: number, lit: number) {
   const light = Math.min(1.4, .45 + .7 * lit)
   ctx.globalAlpha = Math.min(1, show * 1.5)
-  // Legs, torso in a fluorescent vest with silver bands, arms, head, helmet.
-  box(ctx, v, u - .13, z, .22, .17, 0, .9, '#1d2a22', light)
-  box(ctx, v, u + .13, z, .22, .17, 0, .9, '#1d2a22', light)
-  box(ctx, v, u, z, .26, .5, .9, 1.5, '#c8f03c', light)
-  for (const h of [1.05, 1.3]) panel(ctx, v, u, z - .01, -.25, .25, h, h + .05, shade('#dfe4ea', light * 1.2))
-  box(ctx, v, u - .32, z, .16, .13, .95, 1.48, '#c8f03c', light)
-  box(ctx, v, u + .42, z - .05, .14, .4, 1.34, 1.46, '#c8f03c', light)
+  // A traffic police officer: navy uniform, black boots, hi-vis vest with silver bands and POLICÍA
+  // across the chest, white gloves, a navy cap with the chequered band, a whistle on a white cord.
+  const navy = '#1b2547'
+  box(ctx, v, u - .13, z, .24, .17, 0, .14, '#0b0c10', light)
+  box(ctx, v, u + .13, z, .24, .17, 0, .14, '#0b0c10', light)
+  box(ctx, v, u - .13, z, .22, .17, .14, .92, navy, light)
+  box(ctx, v, u + .13, z, .22, .17, .14, .92, navy, light)
+  box(ctx, v, u, z, .24, .48, .88, .96, '#111318', light)
+  box(ctx, v, u, z, .26, .5, .96, 1.5, '#d8f02a', light)
+  for (const h of [1.0, 1.08]) panel(ctx, v, u, z - .01, -.25, .25, h, h + .035, shade('#e8ecf0', light * 1.25))
+  panel(ctx, v, u, z - .01, -.25, .25, 1.24, 1.37, shade(navy, light))
+  {
+    const a = project(v, u, z - .02, 1.305)
+    ctx.fillStyle = shade('#ffffff', light * 1.1)
+    ctx.font = `800 ${Math.max(4, a.k * .085)}px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.fillText('POLICÍA', a.x, a.y)
+  }
+  // Left arm down in a navy sleeve, right arm out holding the paddle; white gloves.
+  box(ctx, v, u - .32, z, .16, .13, 1.0, 1.48, navy, light)
+  box(ctx, v, u - .32, z, .16, .13, .9, 1.0, '#f4f4f4', light)
+  box(ctx, v, u + .42, z - .05, .14, .4, 1.34, 1.46, navy, light)
+  box(ctx, v, u + .64, z - .06, .12, .1, 1.3, 1.44, '#f4f4f4', light)
+  // Whistle cord across the chest.
+  panel(ctx, v, u, z - .02, .04, .07, 1.38, 1.48, shade('#ffffff', light))
   box(ctx, v, u, z, .2, .2, 1.5, 1.66, '#c99a7a', light)
-  box(ctx, v, u, z, .26, .27, 1.64, 1.82, '#f2f2f2', light)
+  // Cap: navy crown, chequered black-and-white band, black peak.
+  box(ctx, v, u, z, .26, .27, 1.7, 1.8, navy, light)
+  for (let k = 0; k < 6; k++) panel(ctx, v, u, z - .01, -.135 + k * .045, -.09 + k * .045, 1.66, 1.7, shade(k % 2 ? '#111111' : '#f4f4f4', light))
+  box(ctx, v, u, z - .1, .1, .27, 1.65, 1.67, '#0b0c10', light)
   // The paddle, held out at arm's length: a red octagon with a white rim and STOP, on a short handle.
   const c = project(v, u + .68, z - .08, 1.62)
   const r = .34 * c.k
@@ -998,10 +1289,7 @@ function drawOfficer(ctx: CanvasRenderingContext2D, v: View, z: number, dusk: nu
     for (let k = 0; k < 8; k++) { const a = Math.PI / 8 + k * Math.PI / 4; ctx.lineTo(c.x + rad * Math.cos(a), c.y + rad * Math.sin(a)) }
     ctx.closePath(); ctx.fill()
   }
-  ctx.shadowColor = color.hard
-  ctx.shadowBlur = 30 * dusk * show
   ctx.fillStyle = '#ffffff'; octagon(r)
-  ctx.shadowBlur = 0
   ctx.fillStyle = color.hard; octagon(r * .86)
   ctx.fillStyle = '#ffffff'
   ctx.font = `800 ${Math.max(6, r * .5)}px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`
@@ -1010,13 +1298,20 @@ function drawOfficer(ctx: CanvasRenderingContext2D, v: View, z: number, dusk: nu
 }
 
 /** The patrol car on the shoulder, light bar flashing blue. */
-function drawPatrol(ctx: CanvasRenderingContext2D, v: View, z: number, dusk: number, show: number, t: number, lit: number, lights: (() => void)[]) {
-  const u = ROAD.rightEdge + .1
+function drawPatrol(ctx: CanvasRenderingContext2D, v: View, z: number, u: number, dusk: number, show: number, t: number, lit: number, lights: (() => void)[]) {
   const light = Math.min(1.3, .4 + .65 * lit)
   ctx.globalAlpha = Math.min(1, show * 1.5)
   box(ctx, v, u, z + 1, 2.4, 1.6, .9, 1.45, '#e9ecef', light)
   box(ctx, v, u, z, 4.4, 1.8, .25, .95, '#e9ecef', light)
-  panel(ctx, v, u, z, -.9, .9, .55, .68, shade('#1f6b3a', light))
+  panel(ctx, v, u, z, -.9, .9, .5, .7, shade('#1b3fa0', light))
+  for (let k = 0; k < 12; k++) panel(ctx, v, u, z - .005, -.9 + k * .15, -.75 + k * .15, .7, .76, shade(k % 2 ? '#1b3fa0' : '#f4f4f4', light))
+  {
+    const a = project(v, u, z - .01, .6)
+    ctx.fillStyle = shade('#ffffff', light)
+    ctx.font = `800 ${Math.max(4, a.k * .13)}px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.fillText('POLICÍA', a.x, a.y)
+  }
   panel(ctx, v, u, z + 1, -.7, .7, .98, 1.4, shade('#3a4a66', light))
   box(ctx, v, u, z + 1.6, .3, 1.2, 1.45, 1.6, '#20242b', light)
   const flash = Math.sin(t * 9) > 0
@@ -1036,8 +1331,39 @@ function drawPatrol(ctx: CanvasRenderingContext2D, v: View, z: number, dusk: num
   })
 }
 
+/** Spanish warning sign P-14: dangerous bends, first one to the right (or left). */
+function drawSBend(ctx: CanvasRenderingContext2D, v: View, z: number, s: number, right: boolean, f: Light, _dusk: number, fog: number) {
+  const u = leftEdge(s) - .45
+  const top = project(v, u, z, 2.3)
+  const base = project(v, u, z, 1.35)
+  const h = base.y - top.y
+  const w = h * 1.15
+  const alpha = fog * f.chevron * Math.min(1, Math.max(0, (z - 4) / 4)) * Math.max(.35, f.paint)
+  if (alpha <= .01 || top.x < -80 || top.x > W + 80 || h < 3) return
+  ctx.globalAlpha = alpha
+  const post = project(v, u, z, 0)
+  ctx.fillStyle = color.steel
+  ctx.fillRect(top.x - Math.max(1, w * .03), base.y - h * .2, Math.max(2, w * .06), post.y - base.y + h * .2)
+  ctx.fillStyle = color.hard
+  ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(top.x + w / 2, base.y); ctx.lineTo(top.x - w / 2, base.y); ctx.closePath(); ctx.fill()
+  ctx.fillStyle = color.paint
+  const k = .26
+  ctx.beginPath(); ctx.moveTo(top.x, top.y + h * k * 1.3); ctx.lineTo(top.x + w * (.5 - k * .6), base.y - h * k * .45); ctx.lineTo(top.x - w * (.5 - k * .6), base.y - h * k * .45); ctx.closePath(); ctx.fill()
+  // The road as a thick black S, bottom to top.
+  const d = right ? 1 : -1
+  ctx.strokeStyle = '#0d0f12'
+  ctx.lineWidth = Math.max(1.5, w * .07)
+  ctx.lineCap = 'round'
+  const x = top.x, y0 = base.y - h * .24, y1 = top.y + h * .42
+  ctx.beginPath()
+  ctx.moveTo(x - d * w * .04, y0)
+  ctx.bezierCurveTo(x + d * w * .16, y0 - (y0 - y1) * .35, x - d * w * .16, y0 - (y0 - y1) * .65, x + d * w * .04, y1)
+  ctx.stroke()
+  ctx.lineCap = 'butt'
+}
+
 /** Spanish warning sign P-17a, "road narrows": white triangle, red rim, at the foot of the cut. */
-function drawNarrows(ctx: CanvasRenderingContext2D, v: View, z: number, s: number, f: Light, dusk: number, fog: number) {
+function drawNarrows(ctx: CanvasRenderingContext2D, v: View, z: number, s: number, f: Light, _dusk: number, fog: number) {
   const u = leftEdge(s) - .45
   const top = project(v, u, z, 2.3)
   const base = project(v, u, z, 1.35)
@@ -1049,11 +1375,8 @@ function drawNarrows(ctx: CanvasRenderingContext2D, v: View, z: number, s: numbe
   const post = project(v, u, z, 0)
   ctx.fillStyle = color.steel
   ctx.fillRect(top.x - Math.max(1, w * .03), base.y - h * .2, Math.max(2, w * .06), post.y - base.y + h * .2)
-  ctx.shadowColor = color.hard
-  ctx.shadowBlur = 22 * dusk
   ctx.fillStyle = color.hard
   ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(top.x + w / 2, base.y); ctx.lineTo(top.x - w / 2, base.y); ctx.closePath(); ctx.fill()
-  ctx.shadowBlur = 0
   ctx.fillStyle = color.paint
   const k = .26
   ctx.beginPath(); ctx.moveTo(top.x, top.y + h * k * 1.3); ctx.lineTo(top.x + w * (.5 - k * .6), base.y - h * k * .45); ctx.lineTo(top.x - w * (.5 - k * .6), base.y - h * k * .45); ctx.closePath(); ctx.fill()
@@ -1065,32 +1388,52 @@ function drawNarrows(ctx: CanvasRenderingContext2D, v: View, z: number, s: numbe
   ctx.beginPath(); ctx.moveTo(x - w * .14, y0); ctx.lineTo(x - w * .14, y0 - h * .12); ctx.lineTo(x - w * .03, y1 + h * .1); ctx.lineTo(x - w * .03, y1); ctx.stroke()
 }
 
-/** A blue panel with white chevrons pointing into the bend, on its outside. Retroreflective: it glows at night. */
-function drawChevron(ctx: CanvasRenderingContext2D, v: View, z: number, s: number, f: Light, dusk: number, fog: number, put: (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => void) {
+/** Spanish curve panel (TB-2): a blue board with two white chevrons pointing into the bend, white rim, on a grey post. Retroreflective: it glows at night. */
+function drawChevron(ctx: CanvasRenderingContext2D, v: View, z: number, s: number, f: Light, dusk: number, fog: number, _put: (tint: string, glyph: Glyph, x: number, y: number, size: number, alpha: number) => void) {
   const right = curvature(s) > 0
   const u = right ? leftEdge(s) - .45 : ROAD.rail + LIP + .1
-  const top = project(v, u, z, 1.55)
-  const bottom = project(v, u, z, .95)
-  const w = .8 * top.k
+  const top = project(v, u, z, 1.65)
+  const bottom = project(v, u, z, 1.05)
   const h = bottom.y - top.y
-  const alpha = fog * f.chevron * (.65 + .35 * dusk) * Math.min(1, Math.max(0, (z - 5) / 4))
-  if (alpha <= .01 || top.x < -60 || top.x > W + 60) return
+  const w = h * 1.35
+  const alpha = fog * f.chevron * (.7 + .3 * dusk) * Math.min(1, Math.max(0, (z - 5) / 4))
+  if (alpha <= .01 || top.x < -80 || top.x > W + 80 || h < 2) return
   ctx.globalAlpha = alpha
-  ctx.shadowColor = color.soft
-  ctx.shadowBlur = 24 * dusk
-  ctx.fillStyle = color.chevron
-  ctx.fillRect(top.x - w / 2, top.y, w, h)
-  ctx.shadowBlur = 0
-  ctx.strokeStyle = color.paint
-  ctx.lineWidth = Math.max(1, w * .05)
-  ctx.strokeRect(top.x - w / 2, top.y, w, h)
   const post = project(v, u, z, 0)
-  ctx.fillStyle = color.steel
-  ctx.fillRect(top.x - Math.max(1, w * .03), bottom.y, Math.max(2, w * .06), post.y - bottom.y)
-  put(color.paint, right ? '>' : '<', top.x, top.y + h / 2, Math.min(h * 1.3, 60), alpha)
+  ctx.fillStyle = '#9aa1ab'
+  ctx.fillRect(top.x - Math.max(1, w * .035), bottom.y - 1, Math.max(2, w * .07), post.y - bottom.y + 1)
+  // Board with a white rim; a soft blue halo once the headlights catch it.
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(top.x - w / 2, top.y, w, h)
+  const rim = Math.max(1, h * .07)
+  ctx.fillStyle = color.chevron
+  ctx.fillRect(top.x - w / 2 + rim, top.y + rim, w - 2 * rim, h - 2 * rim)
+  // Two fat chevrons pointing where the road goes.
+  ctx.fillStyle = '#ffffff'
+  const dir = right ? 1 : -1
+  const ch = h * .62, cw = w * .2, th = w * .1
+  for (const off of [-.17, .13]) {
+    const cx = top.x + dir * off * w
+    const cy = top.y + h / 2
+    ctx.beginPath()
+    ctx.moveTo(cx - dir * cw / 2, cy - ch / 2)
+    ctx.lineTo(cx - dir * cw / 2 + dir * th, cy - ch / 2)
+    ctx.lineTo(cx + dir * cw / 2 + dir * th, cy)
+    ctx.lineTo(cx - dir * cw / 2 + dir * th, cy + ch / 2)
+    ctx.lineTo(cx - dir * cw / 2, cy + ch / 2)
+    ctx.lineTo(cx + dir * cw / 2, cy)
+    ctx.closePath(); ctx.fill()
+  }
 }
 
 /** Live field: requestAnimationFrame loop with eased form and light changes. */
+// The opening, in seconds after the coin: the engine catches, settles, and we pull away.
+const INTRO = { end: 1.4 }
+const ease = (x: number) => { const c = Math.min(1, Math.max(0, x)); return c < .5 ? 4 * c ** 3 : 1 - (-2 * c + 2) ** 3 / 2 }
+/** How far we move across into the lay-by at the end, and how long the swing round takes. */
+const PARK_U = 4.8
+const OUTRO_SWING = 5.5
+
 export class RoadField {
   private from: Light
   private to: Light
@@ -1098,29 +1441,70 @@ export class RoadField {
   private frame = 0
   private travel = 85
   private last = performance.now()
-  private start = performance.now()
-  // The game: when we last went over (ms, -1 if we are on the road), when we came back, which pass this is.
+  /** Seconds of drive time; it stands still while paused. */
+  private clock = 0
+  private paused = false
+  /** At the start, nothing moves until the first M: the coin in the slot. */
+  private waiting = false
+  // The game: when we last went over (clock seconds, -1 if we are on the road) and when we came back.
   private crashAt = -1
   private spawnAt = -1e9
   private armed = true
-  private passes = 0
+  // The drive: real speed in km/h, the gear we are in and the engine's revs.
+  private kmh = 120
+  private gear = 3
+  private rpm = 4000
+  private braking = false
+  // The sheet's script: its lorries, when the sheet opened, which cues have gone, the lorry on the road.
+  private cues: Cue[] = []
+  private sheetAt = 0
+  private fired = 0
+  private lorry: { z: number; outcome: Cue['outcome'] } | null = null
+  // The opening and the closing, the lay-bys on the road, where the car and the camera are across it.
+  private intro: number | null = null
+  private outro: { phase: 'drive' | 'swing'; s: number; at: number } | null = null
+  private lays: LayBy[] = []
+  private heroU = .35
+  private heroYaw = 0
+  private camU = 0
+  private camYaw = 0
+  private spare: HTMLCanvasElement | null = null
 
   constructor(private canvas: HTMLCanvasElement, private reduced: boolean, name: FormName, dusk: number) {
     this.from = this.to = { ...FORMS[name], dusk }
+    if (this.to.intro && !reduced) this.startIntro()
     this.resize()
     this.loop()
   }
 
   setForm(name: FormName, dusk: number) {
+    const was = this.to
     this.from = this.current(performance.now())
     this.to = { ...FORMS[name], dusk }
     this.changed = performance.now()
+    if (this.to.intro && !was.intro && !this.reduced) this.startIntro()
+    // Leaving the first sheet without a coin: start anyway.
+    if (!this.to.intro && this.waiting) { this.waiting = false; this.intro = this.clock }
     if (this.reduced) this.paint(performance.now())
+  }
+
+  /** A new sheet: start its script from the top. */
+  setScript(cues: Cue[] = []) {
+    this.cues = [...cues].sort((a, b) => a.at - b.at)
+    this.sheetAt = this.clock
+    this.fired = 0
+  }
+
+  /** M: the first one starts the game, after that it freezes the drive and lets it go again. */
+  togglePause() {
+    if (this.waiting) { this.waiting = false; this.intro = this.clock; return }
+    this.paused = !this.paused
   }
 
   resize() {
     const rect = this.canvas.getBoundingClientRect()
-    const scale = Math.min(2, Math.max(1, (rect.width / W) * devicePixelRatio))
+    // The road is a backdrop: render it at sheet resolution at most, it does not need retina sharpness.
+    const scale = Math.min(1, Math.max(.5, (rect.width / W) * devicePixelRatio))
     this.canvas.width = Math.round(W * scale)
     this.canvas.height = Math.round(H * scale)
     this.paint(performance.now())
@@ -1130,31 +1514,202 @@ export class RoadField {
 
   private current(now: number) {
     const k = this.reduced ? 1 : Math.min(1, (now - this.changed) / EASE_MS)
-    const out = mix(this.from, this.to, 1 - (1 - k) ** 3)
-    // Turning in at the viewpoint takes its time: a slow pan, not a cut.
-    const kb = this.reduced ? 1 : Math.min(1, (now - this.changed) / TURN_MS)
-    out.bay = lerp(this.from.bay, this.to.bay, smooth(kb))
-    return out
+    return mix(this.from, this.to, 1 - (1 - k) ** 3)
+  }
+
+  /** The straightest, most level stretch of `ahead` metres starting within `span` metres of `from`, clear of the narrowings. */
+  private straight(from: number, ahead: number, span = 320) {
+    let best = from, score = Infinity
+    for (let s = from; s < from + span; s += 4) {
+      let worst = 0
+      for (let d = -15; d <= ahead; d += 4) worst = Math.max(worst, Math.abs(curvature(s + d)) / C_MAX + 25 * Math.abs(grade(s + d) - grade(s)) + 3 * pinch(s + d))
+      if (worst < score) { score = worst; best = s }
+    }
+    return best
+  }
+
+  /** Back to the start: the car on the gravel at the foot of a straight, engine off, waiting for a coin. */
+  private startIntro() {
+    this.travel = this.straight(this.travel, 100, 3000) - 20
+    this.intro = null
+    this.waiting = true
+    this.paused = false
+    this.kmh = 0; this.gear = 0; this.rpm = 0
+    this.lorry = null; this.crashAt = -1; this.outro = null
+    this.lays = []; this.heroU = .35; this.heroYaw = 0; this.camU = 0; this.camYaw = 0
+  }
+
+  private base(crash: number, spawn: number): Hero {
+    return {
+      crash, spawn, lorry: this.lorry, braking: this.braking || this.kmh < 1,
+      hud: this.reduced ? null : { kmh: this.kmh, rpm: this.rpm, gear: this.gear },
+      u: this.heroU, yaw: this.heroYaw, cam: { u: this.camU, yaw: this.camYaw }, lays: this.lays,
+      paused: this.paused, coin: this.waiting,
+    }
+  }
+
+  /** Lay one frame over another, through a spare canvas, for the moment the two cameras meet. */
+  private over(alpha: number, paint: (c: HTMLCanvasElement) => void) {
+    if (alpha <= .01) return
+    this.spare ??= document.createElement('canvas')
+    if (this.spare.width !== this.canvas.width || this.spare.height !== this.canvas.height) { this.spare.width = this.canvas.width; this.spare.height = this.canvas.height }
+    paint(this.spare)
+    const ctx = this.canvas.getContext('2d')!
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = Math.min(1, alpha)
+    ctx.drawImage(this.spare, 0, 0)
+    ctx.restore()
   }
 
   private paint(now: number) {
     const light = this.current(now)
-    let crash = this.crashAt < 0 ? -1 : (now - this.crashAt) / 1000
+    const dt = this.paused || this.waiting || this.reduced ? 0 : Math.min(.1, (now - this.last) / 1000)
+    this.last = now
+    this.clock += dt
+    const t = this.clock
+    if (this.intro !== null && t - this.intro >= INTRO.end) this.intro = null
+    if (this.waiting) { draw(this.canvas, light, this.travel, t, this.base(-1, 1)); return }
+    if (this.intro !== null) { this.paintIntro(light, t - this.intro); return }
+    this.police()
+    this.closing(light)
+    if (this.outro?.phase === 'swing') { this.paintOutro(light, t - this.outro.at); return }
+    let crash = this.crashAt < 0 ? -1 : t - this.crashAt
     // After the countdown, start again a little further on, with the lorry gone.
-    if (crash > 4.4) { this.crashAt = -1; crash = -1; this.travel += 60; this.spawnAt = now; this.armed = false }
+    if (crash > 4.4) { this.crashAt = -1; crash = -1; this.travel += 60; this.spawnAt = t; this.armed = false; this.lorry = null; this.kmh = 50; this.gear = 1 }
     // Once over the edge the camera stops at the lip and watches.
     const pace = crash < 0 ? 1 : Math.max(0, 1 - crash * 2.5)
-    if (!this.reduced) this.travel += Math.min(.1, (now - this.last) / 1000) * light.speed * pace
-    this.last = now
-    const spawn = Math.min(1, (now - this.spawnAt) / 900)
-    const peak = draw(this.canvas, light, this.travel, (now - this.start) / 1000, { crash, spawn })
-    // A close pass: decide, once per lorry, whether this one puts us over.
+    if (!this.reduced) {
+      if (crash < 0) this.drive(light, dt)
+      else { this.kmh = Math.max(0, this.kmh - dt * 120); this.braking = true }
+      this.travel += dt * this.kmh / 3.6 * WORLD * pace
+      this.script(dt * pace)
+    }
+    const spawn = Math.min(1, (t - this.spawnAt) / .9)
+    const peak = draw(this.canvas, light, this.travel, t, this.base(crash, spawn))
+    // The close pass: the script says whether this one puts us over. Steel never lets us.
     if (this.reduced || crash >= 0) return
     if (peak > .8 && this.armed) {
       this.armed = false
-      this.passes++
-      if (light.car > .6 && overTheEdge(light, this.travel, this.passes)) this.crashAt = now
+      if (this.lorry?.outcome === 'crash' && regimeOf(light) !== 'hard' && light.car > .6) this.crashAt = t
     } else if (peak < .2) this.armed = true
+  }
+
+  /** The coin is in: the engine catches with a puff of exhaust, the revs settle, and then we drive. */
+  private paintIntro(light: Light, k: number) {
+    this.rpm = k < .4 ? 2600 : 900
+    draw(this.canvas, light, this.travel, this.clock, { ...this.base(-1, 1), braking: true, puff: Math.min(1, k) })
+  }
+
+  /** The stop: a lay-by comes into view far ahead with the police in it, and we brake to halt short of the officer. */
+  private police() {
+    const ahead = this.lays.find(l => l.kind === 'police' && l.s + l.len > this.travel)
+    if (this.to.stop > .5 && !ahead && this.intro === null) this.lays.push({ s: this.travel + LENGTH - 4, len: 30, kind: 'police' })
+    this.lays = this.lays.filter(l => l.s + l.len + 25 > this.travel || (l.kind === 'parking' && this.outro))
+  }
+
+  /** Where the car has to stop, if anywhere: short of the officer, or inside the lay-by at the end. */
+  private stopAt() {
+    if (this.outro) return this.outro.s + 16
+    const lay = this.lays.find(l => l.kind === 'police' && l.s + 8 > this.travel + HERO_Z)
+    return this.to.stop > .5 && lay ? lay.s - 4.7 : null
+  }
+
+  /**
+   * The closing. Once the last sheet is up we look for the next straight, with a lay-by over the bay at
+   * the far end of it; we pull across into it and stop, and then the camera swings round to the side.
+   */
+  private closing(light: Light) {
+    if (this.to.bay < .5) {
+      if (this.outro) { this.outro = null; this.lays = this.lays.filter(l => l.kind !== 'parking'); this.heroU = .35; this.heroYaw = 0; this.camU = 0; this.camYaw = 0 }
+      return
+    }
+    if (!this.outro) {
+      const s = this.straight(this.travel + LENGTH - 8, 60)
+      this.outro = { phase: 'drive', s, at: 0 }
+      this.lays = this.lays.filter(l => l.kind !== 'parking').concat({ s, len: 40, kind: 'parking' })
+    }
+    if (this.outro.phase !== 'drive') return
+    const rear = this.travel + HERO_Z
+    const x = Math.min(1, Math.max(0, (rear - (this.outro.s - 8)) / 20))
+    this.heroU = .35 + PARK_U * smooth(x)
+    this.heroYaw = Math.atan(PARK_U * 6 * x * (1 - x) / 20)
+    const cx = Math.min(1, Math.max(0, (rear - (this.outro.s - 4)) / 22))
+    this.camU = PARK_U * smooth(cx)
+    if (x >= 1 && this.kmh < .5) { this.kmh = 0; this.outro = { ...this.outro, phase: 'swing', at: this.clock } }
+    void light
+  }
+
+  /** The last shot: the car stays parked and the camera turns to the right, out over the moonlit bay. */
+  private paintOutro(light: Light, k: number) {
+    const e = ease(k / OUTRO_SWING)
+    const yaw = (Math.PI / 2 - .2) * e
+    const cam: Cine = { x: this.camU, y: CAM_H, z: 0, yaw }
+    this.rpm = 900
+    draw(this.canvas, light, this.travel, this.clock, { ...this.base(-1, 1), cine: cam, hud: null, yaw: 0, bay: smooth((yaw - .45) / .8) })
+    // The first instant: the drive's frame, fading into the free camera's identical one.
+    if (k < .4) this.over(1 - k / .4, c => draw(c, light, this.travel, this.clock, this.base(-1, 1)))
+  }
+
+  /**
+   * Drive like the car would: flat out on the straights, brake hard enough to make each bend at
+   * its own speed, accelerate out of it, change gear on the way. The sheet sets the ceiling; a stop
+   * ahead (the police, the lay-by at the end) brings us to rest exactly there.
+   */
+  private drive(light: Light, dt: number) {
+    const ceiling = TOP_KMH * Math.max(0, light.speed) / 7
+    let allowed = ceiling
+    // Each bend's speed is set by its tightest point, and we must be down to it where the bend begins:
+    // so look a little past each point for the apex, and plan the braking with some margin in hand.
+    const at = this.travel + HERO_Z
+    for (let d = 0; d <= 200; d += 3) {
+      let sharp = 0
+      for (let a = 0; a <= 40; a += 5) sharp = Math.max(sharp, Math.abs(curvature(at + d + a)) / C_MAX)
+      if (sharp < .08) continue
+      const corner = 235 - 180 * Math.min(1, sharp) ** .6
+      allowed = Math.min(allowed, 3.6 * Math.sqrt((corner / 3.6) ** 2 + 2 * PLAN * d / WORLD))
+    }
+    const stop = this.stopAt()
+    if (stop !== null) {
+      const d = stop - (this.travel + HERO_Z)
+      allowed = Math.min(allowed, d <= .05 ? 0 : 3.6 * Math.sqrt(2 * PLAN * d / WORLD))
+      if (d <= .05 && this.kmh < 8) this.kmh = 0
+    }
+    const ms = this.kmh / 3.6
+    let acc: number
+    // On the brakes as soon as we reach the planned curve, and harder if we are over it.
+    if (this.kmh > allowed + .5) acc = -Math.min(BRAKE * 1.3, PLAN + (this.kmh - allowed) / 3.6 * 3)
+    else {
+      // Pull: strong low down, fading towards the top; climbs cost, descents give.
+      acc = Math.max(.4, 9.5 * (1 - this.kmh / 330)) - 9.8 * grade(this.travel + HERO_Z)
+      if (this.kmh > allowed - 4) acc = Math.min(acc, (allowed - this.kmh) / 3.6 * 2)
+    }
+    this.braking = acc < -2.5
+    this.kmh = Math.max(0, (ms + acc * dt) * 3.6)
+    // Seven-speed box: up near the redline, down as the revs fall under braking.
+    const revs = (g: number) => this.kmh < 3 && g === 0 ? 900 : 1000 + 6500 * this.kmh / GEAR_TOP[g]
+    if (revs(this.gear) > 7300 && this.gear < GEAR_TOP.length - 1) this.gear++
+    else if (this.gear > 0 && revs(this.gear) < (this.braking ? 4200 : 2400)) this.gear--
+    const target = Math.max(900, revs(this.gear))
+    this.rpm += (target - this.rpm) * Math.min(1, dt * 12)
+  }
+
+  /** Send the next lorry when its cue comes up, and move the one on the road. */
+  private script(dt: number) {
+    // Oncoming at its own 7 m/s plus ours.
+    const closing = this.kmh / 3.6 * WORLD + 7
+    if (this.lorry) {
+      this.lorry.z -= dt * closing
+      if (this.lorry.z < -60) this.lorry = null
+    }
+    const cue = this.cues[this.fired]
+    if (!cue || this.lorry || this.crashAt >= 0 || this.clock - this.sheetAt < cue.at) return
+    if (cue.outcome === 'crash') {
+      // Wait for the pass to fall on a left-hand bend, where we are on the outside; give up after 20 s.
+      const meet = this.travel + this.kmh / 3.6 * WORLD * (LENGTH - Z_MIN) / closing
+      const late = this.clock - this.sheetAt - cue.at > 20
+      if (!late && curvature(meet + HERO_Z) / C_MAX > -.35) return
+    }
+    this.lorry = { z: LENGTH, outcome: cue.outcome }
+    this.fired++
   }
 
   private loop = () => {

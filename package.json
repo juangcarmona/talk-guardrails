@@ -11,6 +11,7 @@
     "og": "node scripts/capture.mjs og"
   },
   "dependencies": {
+    "highlight.js": "11.11.1",
     "qrcode": "1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0"

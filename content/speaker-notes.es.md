@@ -14,11 +14,19 @@ Una sección `## scene-id` por escena; `[click]` separa lo que se dice en cada p
 
 (pendiente)
 
+## determinism
+
+(pendiente)
+
 ## soft-examples
 
 (pendiente)
 
 ## soft-practice
+
+(pendiente)
+
+## soft-code
 
 (pendiente)
 
@@ -47,6 +55,10 @@ Una sección `## scene-id` por escena; `[click]` separa lo que se dice en cada p
 (pendiente)
 
 ## agent
+
+(pendiente)
+
+## agent-hook
 
 (pendiente)
 

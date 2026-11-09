@@ -20,7 +20,7 @@ export function Stage({ index, step, lang, still = false, minutes = 0, onLang }:
   const scene = scenes[index]
   const t = translator(lang)
   return <div className="sheet" data-layout={scene.layout} data-act={scene.act} data-rail={actRail[scene.act]} style={{ '--act': actColor[scene.act] } as CSSProperties}>
-    <Field form={scene.form(step)} dusk={index / (scenes.length - 1)} still={still} />
+    <Field form={scene.form(step)} dusk={index / (scenes.length - 1)} still={still} sheet={scene.id} traffic={scene.traffic} />
     {scene.act > 0 && <div className="chapter-bar" aria-hidden="true" />}
     {scene.act > 0 && <p className="chapter-label">{t(...acts[scene.act])}</p>}
     <StepContext.Provider value={step}>

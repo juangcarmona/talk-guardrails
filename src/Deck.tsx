@@ -115,11 +115,15 @@ export function Deck() {
     if (action === 'presenter') window.open(`${location.pathname}?presenter&lang=${lang}${toHash(ref.current)}`, 'guardrails-presenter', 'width=1400,height=860')
     if (action === 'blackout') setBlackout(on => { channel?.postMessage({ type: 'blackout', on: !on } satisfies Message); return !on })
     if (action === 'fullscreen') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()
+    if (action === 'pause') { dispatchEvent(new Event('road:pause')); channel?.postMessage({ type: 'pause' } satisfies Message) }
   }, [ref, lang])
   useKeys(go, ref, extra)
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent<Message>) => { if (event.data.type === 'blackout') setBlackout(event.data.on) }
+    const onMessage = (event: MessageEvent<Message>) => {
+      if (event.data.type === 'blackout') setBlackout(event.data.on)
+      if (event.data.type === 'pause') dispatchEvent(new Event('road:pause'))
+    }
     channel?.addEventListener('message', onMessage)
     return () => channel?.removeEventListener('message', onMessage)
   }, [])
